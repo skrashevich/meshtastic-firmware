@@ -24,7 +24,7 @@ This is a fork of the [official Meshtastic firmware](https://github.com/meshtast
 ### Russian Language Features
 
 - **Russian OLED display** — Cyrillic text rendering on OLED screens (via `OLED_RU` build flag)
-- **Russian keyboard for T-Deck** — Full Russian keyboard layout with EN/RU switching via the [device-ui fork](https://github.com/skrashevich/device-ui/tree/feat-russian-keyboard)
+- **Russian keyboard for T-Deck** — Full Russian keyboard layout with EN/RU switching via the [device-ui fork](https://github.com/skrashevich/device-ui/tree/feat-russian-keyboard). Toggle layout by pressing **Left Shift + Mic button** simultaneously
 
 ### Supported Devices
 
