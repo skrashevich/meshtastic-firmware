@@ -1,0 +1,47 @@
+#pragma once
+
+#include "configuration.h"
+
+#ifndef TELEGRAM_BOT_TOKEN
+#define TELEGRAM_BOT_TOKEN ""
+#endif
+
+#ifndef TELEGRAM_CHAT_ID
+#define TELEGRAM_CHAT_ID ""
+#endif
+
+#ifndef TELEGRAM_CHANNELS
+#define TELEGRAM_CHANNELS ""
+#endif
+
+#ifndef TELEGRAM_POLL_INTERVAL_MS
+#define TELEGRAM_POLL_INTERVAL_MS 3000
+#endif
+
+#ifndef TELEGRAM_LONG_POLL_TIMEOUT
+#define TELEGRAM_LONG_POLL_TIMEOUT 0
+#endif
+
+#ifndef TELEGRAM_MAX_QUEUE_SIZE
+#define TELEGRAM_MAX_QUEUE_SIZE 16
+#endif
+
+#ifndef TELEGRAM_SEND_INTERVAL_MS
+#define TELEGRAM_SEND_INTERVAL_MS 1000
+#endif
+
+#ifndef TELEGRAM_API_HOST
+#define TELEGRAM_API_HOST "api.telegram.org"
+#endif
+
+#ifndef TELEGRAM_API_PORT
+#define TELEGRAM_API_PORT 443
+#endif
+
+#ifndef TELEGRAM_HTTP_TIMEOUT_MS
+#define TELEGRAM_HTTP_TIMEOUT_MS 5000
+#endif
+
+#ifndef TELEGRAM_MAX_TEXT_SIZE
+#define TELEGRAM_MAX_TEXT_SIZE 4096
+#endif

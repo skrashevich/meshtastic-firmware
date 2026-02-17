@@ -72,6 +72,10 @@ NRF52Bluetooth *nrf52Bluetooth = nullptr;
 #include "mqtt/MQTT.h"
 #endif
 
+#if !MESHTASTIC_EXCLUDE_TELEGRAM && HAS_WIFI && defined(ARCH_ESP32)
+#include "telegram/TelegramBridge.h"
+#endif
+
 #ifdef ARCH_PORTDUINO
 #include "linux/LinuxHardwareI2C.h"
 #include "mesh/raspihttp/PiWebServer.h"
@@ -956,6 +960,10 @@ void setup()
 
 #if !MESHTASTIC_EXCLUDE_MQTT
     mqttInit();
+#endif
+
+#if !MESHTASTIC_EXCLUDE_TELEGRAM && HAS_WIFI && defined(ARCH_ESP32)
+    telegramInit();
 #endif
 
 #ifdef RF95_FAN_EN

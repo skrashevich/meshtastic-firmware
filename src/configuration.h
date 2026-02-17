@@ -458,6 +458,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Global switches to turn off features for a minimized build
 // -----------------------------------------------------------------------------
 
+// Telegram bridge is opt-in by default.
+#ifndef MESHTASTIC_EXCLUDE_TELEGRAM
+#define MESHTASTIC_EXCLUDE_TELEGRAM 1
+#endif
+
 // #define MESHTASTIC_MINIMIZE_BUILD 1
 #ifdef MESHTASTIC_MINIMIZE_BUILD
 #define MESHTASTIC_EXCLUDE_MODULES 1

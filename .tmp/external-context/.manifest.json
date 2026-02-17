@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-02-17T00:00:00Z",
+  "libraries": {
+    "telegram-bot-api": {
+      "files": [
+        {
+          "filename": "sendmessage-getupdates.md",
+          "topic": "sendMessage/getUpdates long polling, encoding, parse_mode",
+          "tech_stack": "ESP32 firmware",
+          "fetched": "2026-02-17T00:00:00Z",
+          "source": "Context7 API + official docs"
+        }
+      ]
+    },
+    "telegramesp32": {
+      "files": [
+        {
+          "filename": "library-architecture-api-tradeoffs.md",
+          "topic": "architecture, dependencies, API surface, runtime tradeoffs",
+          "tech_stack": "ESP32 firmware",
+          "fetched": "2026-02-17T00:00:00Z",
+          "source": "Official repository"
+        }
+      ]
+    }
+  }
+}
