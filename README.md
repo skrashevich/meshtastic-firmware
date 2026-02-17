@@ -33,6 +33,10 @@ This is a fork of the [official Meshtastic firmware](https://github.com/meshtast
 | T-Deck (TFT) | ✅ | ✅ |
 | Other devices with OLED | ✅ | — |
 
+### Download
+
+- 📦 **[Latest build artifacts](https://nightly.link/skrashevich/meshtastic-firmware/workflows/main_matrix/develop?preview)** — Pre-built firmware binaries from the `develop` branch
+
 ### Building
 
 Follow the standard [Meshtastic build instructions](https://meshtastic.org/docs/development/firmware/build). To build the T-Deck firmware with Russian support:
