@@ -1,0 +1,78 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # Every day at 04:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/meshtastic/firmware.git || true
+          git fetch upstream --tags --force
+
+      - name: Sync develop branch
+        run: |
+          git checkout develop
+          git merge upstream/develop --no-edit || {
+            echo "::warning::Merge conflict on develop branch. Manual resolution required."
+            git merge --abort
+            exit 1
+          }
+          git push origin develop
+          git push origin --tags
+
+  sync-releases:
+    needs: sync-branches
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Sync releases from upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get latest upstream releases
+          UPSTREAM_RELEASES=$(gh release list --repo meshtastic/firmware --limit 10 --json tagName,name,body,isDraft,isPrerelease -q '.[] | select(.isDraft == false)')
+
+          # Get existing releases in fork
+          FORK_RELEASES=$(gh release list --limit 50 --json tagName -q '.[].tagName')
+
+          # Sync each missing release
+          echo "$UPSTREAM_RELEASES" | jq -c '.' | while read -r release; do
+            TAG=$(echo "$release" | jq -r '.tagName')
+            NAME=$(echo "$release" | jq -r '.name')
+            IS_PRE=$(echo "$release" | jq -r '.isPrerelease')
+
+            if echo "$FORK_RELEASES" | grep -q "^${TAG}$"; then
+              echo "Release $TAG already exists, skipping"
+              continue
+            fi
+
+            echo "Creating release $TAG..."
+            PRE_FLAG=""
+            if [ "$IS_PRE" = "true" ]; then
+              PRE_FLAG="--prerelease"
+            fi
+
+            # Get release body from upstream
+            BODY=$(gh release view "$TAG" --repo meshtastic/firmware --json body -q '.body' 2>/dev/null || echo "Synced from upstream meshtastic/firmware")
+
+            gh release create "$TAG" \
+              --title "$NAME" \
+              --notes "$BODY" \
+              $PRE_FLAG || echo "::warning::Failed to create release $TAG"
+          done
