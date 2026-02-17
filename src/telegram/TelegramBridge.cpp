@@ -2,6 +2,7 @@
 
 #if !MESHTASTIC_EXCLUDE_TELEGRAM && HAS_WIFI && defined(ARCH_ESP32)
 
+#include "concurrency/LockGuard.h"
 #include "mesh/Channels.h"
 #include "mesh/MeshService.h"
 #include "mesh/NodeDB.h"
@@ -25,6 +26,11 @@ constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 1000;
 constexpr uint32_t RUN_INTERVAL_MS = 200;
 constexpr uint32_t HEAP_WARN_INTERVAL_MS = 10000;
 constexpr uint32_t MAX_BACKOFF_MS = 60000;
+constexpr uint32_t MIN_POLL_INTERVAL_MS = 200;
+constexpr uint32_t MAX_POLL_INTERVAL_MS = 60000;
+constexpr uint32_t MIN_SEND_INTERVAL_MS = 200;
+constexpr uint32_t MAX_SEND_INTERVAL_MS = 10000;
+constexpr uint32_t MAX_LONG_POLL_TIMEOUT_SEC = 60;
 constexpr size_t TELEGRAM_UPDATE_BATCH_SIZE = 8;
 
 size_t utf8SafePrefixLength(const std::string &value, size_t maxBytes)
@@ -43,6 +49,49 @@ size_t utf8SafePrefixLength(const std::string &value, size_t maxBytes)
     return end;
 }
 
+uint32_t normalizePollInterval(uint32_t value)
+{
+    if (value < MIN_POLL_INTERVAL_MS || value > MAX_POLL_INTERVAL_MS) {
+        return TELEGRAM_POLL_INTERVAL_MS;
+    }
+    return value;
+}
+
+uint32_t normalizeSendInterval(uint32_t value)
+{
+    if (value < MIN_SEND_INTERVAL_MS || value > MAX_SEND_INTERVAL_MS) {
+        return TELEGRAM_SEND_INTERVAL_MS;
+    }
+    return value;
+}
+
+uint32_t normalizeLongPollTimeout(uint32_t value)
+{
+    if (value > MAX_LONG_POLL_TIMEOUT_SEC) {
+        return TELEGRAM_LONG_POLL_TIMEOUT;
+    }
+    return value;
+}
+
+const char *sourceToString(TelegramControlSource source)
+{
+    switch (source) {
+    case TelegramControlSource::DEVICE_UI:
+        return "device-ui";
+    case TelegramControlSource::TELEGRAM_CHAT:
+        return "telegram-chat";
+    case TelegramControlSource::HTTP_API:
+        return "http-api";
+    case TelegramControlSource::SERIAL_API:
+        return "serial-api";
+    case TelegramControlSource::OTHER:
+        return "other";
+    case TelegramControlSource::UNKNOWN:
+    default:
+        return "unknown";
+    }
+}
+
 } // namespace
 
 void telegramInit()
@@ -50,6 +99,42 @@ void telegramInit()
     if (!telegramBridge) {
         telegramBridge = new TelegramBridge();
     }
+}
+
+TelegramControlSnapshot telegramGetControlSnapshot()
+{
+    if (!telegramBridge) {
+        TelegramControlSnapshot snapshot;
+        snapshot.featureAvailable = true;
+        snapshot.queueCapacity = TELEGRAM_MAX_QUEUE_SIZE;
+        return snapshot;
+    }
+
+    return telegramBridge->getControlSnapshot();
+}
+
+TelegramControlResult telegramApplyControlPatch(const TelegramControlPatch &patch, TelegramControlSource source)
+{
+    if (!telegramBridge) {
+        TelegramControlResult result;
+        result.error = TelegramControlError::NOT_AVAILABLE;
+        result.message = "Telegram bridge is not initialized";
+        return result;
+    }
+
+    return telegramBridge->applyControlPatch(patch, source);
+}
+
+TelegramControlResult telegramSetEnabled(bool enabled, TelegramControlSource source)
+{
+    if (!telegramBridge) {
+        TelegramControlResult result;
+        result.error = TelegramControlError::NOT_AVAILABLE;
+        result.message = "Telegram bridge is not initialized";
+        return result;
+    }
+
+    return telegramBridge->setEnabled(enabled, source);
 }
 
 TelegramBridge::TelegramBridge() : concurrency::OSThread("telegram"), messageQueue(TELEGRAM_MAX_QUEUE_SIZE)
@@ -61,39 +146,219 @@ TelegramBridge::TelegramBridge() : concurrency::OSThread("telegram"), messageQue
         observe(textMessageModule);
     }
 
-    if (!api.isConfigured() || !hasConfiguredChatId) {
-        LOG_INFO("Telegram bridge disabled: missing bot token or chat_id");
-        state = State::STATE_DISABLED;
-        disable();
-        return;
+    {
+        concurrency::LockGuard guard(&configLock);
+        refreshOperationalStateLocked();
     }
 
-    state = State::STATE_WAIT_WIFI;
     LOG_INFO("Telegram bridge initialized");
+}
+
+TelegramControlSnapshot TelegramBridge::getControlSnapshot()
+{
+    TelegramControlSnapshot snapshot;
+    snapshot.featureAvailable = true;
+
+    concurrency::LockGuard guard(&configLock);
+
+    snapshot.enabled = bridgeEnabled;
+    snapshot.running = (state == State::STATE_RUNNING);
+    snapshot.configured = isConfiguredLocked();
+    snapshot.wifiConnected = isWifiConnected();
+
+    snapshot.allowAllChannels = allowAllChannels;
+    snapshot.channels = channelsConfig;
+    snapshot.meshChannelForInject = telegramToMeshChannel;
+
+    snapshot.queueUsed = static_cast<uint16_t>(messageQueue.numUsed());
+    snapshot.queueCapacity = TELEGRAM_MAX_QUEUE_SIZE;
+
+    snapshot.pollIntervalMs = pollIntervalMs;
+    snapshot.longPollTimeoutSec = longPollTimeoutSec;
+    snapshot.sendIntervalMs = sendIntervalMs;
+
+    snapshot.hasToken = !token.empty();
+    snapshot.hasChatId = hasConfiguredChatId;
+    snapshot.chatId = chatId;
+
+    return snapshot;
+}
+
+TelegramControlResult TelegramBridge::setEnabled(bool enabledSetting, TelegramControlSource source)
+{
+    TelegramControlPatch patch;
+    patch.hasEnabled = true;
+    patch.enabled = enabledSetting;
+    return applyControlPatch(patch, source);
+}
+
+TelegramControlResult TelegramBridge::applyControlPatch(const TelegramControlPatch &patch, TelegramControlSource source)
+{
+    TelegramControlResult result;
+    bool changed = false;
+
+    concurrency::LockGuard guard(&configLock);
+
+    if (patch.hasPollIntervalMs) {
+        if (patch.pollIntervalMs < MIN_POLL_INTERVAL_MS || patch.pollIntervalMs > MAX_POLL_INTERVAL_MS) {
+            result.error = TelegramControlError::INVALID_ARGUMENT;
+            result.message = "pollIntervalMs out of range";
+            return result;
+        }
+    }
+
+    if (patch.hasSendIntervalMs) {
+        if (patch.sendIntervalMs < MIN_SEND_INTERVAL_MS || patch.sendIntervalMs > MAX_SEND_INTERVAL_MS) {
+            result.error = TelegramControlError::INVALID_ARGUMENT;
+            result.message = "sendIntervalMs out of range";
+            return result;
+        }
+    }
+
+    if (patch.hasLongPollTimeoutSec) {
+        if (patch.longPollTimeoutSec > MAX_LONG_POLL_TIMEOUT_SEC) {
+            result.error = TelegramControlError::INVALID_ARGUMENT;
+            result.message = "longPollTimeoutSec out of range";
+            return result;
+        }
+    }
+
+    if (patch.hasEnabled && patch.enabled != bridgeEnabled) {
+        bridgeEnabled = patch.enabled;
+        changed = true;
+    }
+
+    if (patch.hasToken) {
+        const std::string newToken = trim(patch.token);
+        if (newToken != token) {
+            token = newToken;
+            api.setToken(token.c_str());
+            changed = true;
+        }
+    }
+
+    if (patch.hasChatId) {
+        const std::string newChatId = trim(patch.chatId);
+        int64_t parsedChatId = 0;
+        const bool hasParsed = parseChatId(newChatId, parsedChatId);
+
+        if (!newChatId.empty() && !hasParsed) {
+            result.error = TelegramControlError::INVALID_ARGUMENT;
+            result.message = "chatId must be integer";
+            return result;
+        }
+
+        if (newChatId != chatId || hasConfiguredChatId != hasParsed || (hasParsed && configuredChatId != parsedChatId)) {
+            chatId = newChatId;
+            hasConfiguredChatId = hasParsed;
+            if (hasParsed) {
+                configuredChatId = parsedChatId;
+            } else {
+                configuredChatId = 0;
+            }
+            changed = true;
+        }
+    }
+
+    if (patch.hasChannels) {
+        const std::string previousChannels = channelsConfig;
+        const bool previousAllowAll = allowAllChannels;
+        const std::set<uint8_t> previousAllowed = allowedChannels;
+        const uint8_t previousTxChannel = telegramToMeshChannel;
+
+        if (!applyChannelsConfig(patch.channels)) {
+            result.error = TelegramControlError::INVALID_ARGUMENT;
+            result.message = "channels format invalid";
+            return result;
+        }
+
+        if (previousChannels != channelsConfig || previousAllowAll != allowAllChannels || previousAllowed != allowedChannels ||
+            previousTxChannel != telegramToMeshChannel) {
+            changed = true;
+        }
+    }
+
+    if (patch.hasPollIntervalMs && pollIntervalMs != patch.pollIntervalMs) {
+        pollIntervalMs = patch.pollIntervalMs;
+        changed = true;
+    }
+
+    if (patch.hasLongPollTimeoutSec && longPollTimeoutSec != patch.longPollTimeoutSec) {
+        longPollTimeoutSec = patch.longPollTimeoutSec;
+        changed = true;
+    }
+
+    if (patch.hasSendIntervalMs && sendIntervalMs != patch.sendIntervalMs) {
+        sendIntervalMs = patch.sendIntervalMs;
+        changed = true;
+    }
+
+    result.changed = changed;
+    if (!changed) {
+        result.persisted = true;
+        result.message = "No changes";
+        return result;
+    }
+
+    if (!saveSettingsToNvsLocked()) {
+        result.error = TelegramControlError::PERSISTENCE_ERROR;
+        result.persisted = false;
+        result.message = "Failed to save Telegram settings";
+        refreshOperationalStateLocked();
+        return result;
+    }
+
+    refreshOperationalStateLocked();
+
+    result.persisted = true;
+    if (bridgeEnabled && !isConfiguredLocked()) {
+        result.message = "Settings saved, bridge needs bot token and chat_id";
+    } else {
+        result.message = "Settings saved";
+    }
+
+    LOG_INFO("Telegram control patch applied from %s", sourceToString(source));
+    return result;
 }
 
 int32_t TelegramBridge::runOnce()
 {
-    if (state == State::STATE_DISABLED)
+    State currentState = State::STATE_DISABLED;
+    uint32_t currentPollIntervalMs = TELEGRAM_POLL_INTERVAL_MS;
+    {
+        concurrency::LockGuard guard(&configLock);
+        currentState = state;
+        currentPollIntervalMs = pollIntervalMs;
+    }
+
+    if (currentState == State::STATE_DISABLED)
         return disable();
 
     if (!isWifiConnected()) {
-        if (state != State::STATE_WAIT_WIFI) {
+        bool needsLog = false;
+        {
+            concurrency::LockGuard guard(&configLock);
+            needsLog = state != State::STATE_WAIT_WIFI;
+            state = State::STATE_WAIT_WIFI;
+        }
+        if (needsLog) {
             LOG_INFO("Telegram bridge waiting for WiFi");
         }
-        state = State::STATE_WAIT_WIFI;
         return WIFI_RETRY_INTERVAL_MS;
     }
 
-    if (state == State::STATE_WAIT_WIFI) {
-        state = State::STATE_RUNNING;
-        LOG_INFO("Telegram bridge running");
+    {
+        concurrency::LockGuard guard(&configLock);
+        if (state == State::STATE_WAIT_WIFI) {
+            state = State::STATE_RUNNING;
+            LOG_INFO("Telegram bridge running");
+        }
     }
 
     sendQueuedMessages();
 
     const uint32_t now = millis();
-    if (static_cast<uint32_t>(now - lastPollAtMs) >= pollIntervalMs) {
+    if (static_cast<uint32_t>(now - lastPollAtMs) >= currentPollIntervalMs) {
         processIncomingTelegram();
         lastPollAtMs = now;
     }
@@ -111,11 +376,15 @@ int32_t TelegramBridge::runOnce()
 
 int TelegramBridge::onNotify(const meshtastic_MeshPacket *packet)
 {
-    if (packet == nullptr || state == State::STATE_DISABLED)
+    if (packet == nullptr)
         return 0;
 
-    if (!isChannelAllowed(packet->channel))
-        return 0;
+    {
+        concurrency::LockGuard guard(&configLock);
+        if (state == State::STATE_DISABLED || !isChannelAllowed(packet->channel)) {
+            return 0;
+        }
+    }
 
     if (isSelfInjected(packet->id))
         return 0;
@@ -133,6 +402,7 @@ void TelegramBridge::loadConfig()
     token = TELEGRAM_BOT_TOKEN;
     chatId = TELEGRAM_CHAT_ID;
     channelsConfig = TELEGRAM_CHANNELS;
+    bridgeEnabled = TELEGRAM_ENABLED_DEFAULT;
     pollIntervalMs = TELEGRAM_POLL_INTERVAL_MS;
     longPollTimeoutSec = TELEGRAM_LONG_POLL_TIMEOUT;
     sendIntervalMs = TELEGRAM_SEND_INTERVAL_MS;
@@ -142,12 +412,70 @@ void TelegramBridge::loadConfig()
         token = prefs.getString("bot_token", token.c_str()).c_str();
         chatId = prefs.getString("chat_id", chatId.c_str()).c_str();
         channelsConfig = prefs.getString("channels", channelsConfig.c_str()).c_str();
+        bridgeEnabled = prefs.getBool("enabled", bridgeEnabled);
+        pollIntervalMs = prefs.getUInt("poll_ms", pollIntervalMs);
+        longPollTimeoutSec = prefs.getUInt("long_poll", longPollTimeoutSec);
+        sendIntervalMs = prefs.getUInt("send_ms", sendIntervalMs);
         prefs.end();
     }
 
+    pollIntervalMs = normalizePollInterval(pollIntervalMs);
+    longPollTimeoutSec = normalizeLongPollTimeout(longPollTimeoutSec);
+    sendIntervalMs = normalizeSendInterval(sendIntervalMs);
+
     api.setToken(token.c_str());
     hasConfiguredChatId = parseChatId(chatId, configuredChatId);
-    applyChannelsConfig(channelsConfig, false);
+    if (!applyChannelsConfig(channelsConfig)) {
+        LOG_WARN("Invalid Telegram channels config in NVS, fallback to all channels");
+        channelsConfig.clear();
+        applyChannelsConfig(channelsConfig);
+    }
+}
+
+bool TelegramBridge::saveSettingsToNvsLocked()
+{
+    Preferences prefs;
+    if (!prefs.begin("telegram", false)) {
+        LOG_WARN("Telegram bridge failed to open NVS for settings");
+        return false;
+    }
+
+    prefs.putString("bot_token", token.c_str());
+    prefs.putString("chat_id", chatId.c_str());
+    prefs.putString("channels", channelsConfig.c_str());
+    prefs.putBool("enabled", bridgeEnabled);
+    prefs.putUInt("poll_ms", pollIntervalMs);
+    prefs.putUInt("long_poll", longPollTimeoutSec);
+    prefs.putUInt("send_ms", sendIntervalMs);
+    prefs.end();
+    return true;
+}
+
+bool TelegramBridge::isConfiguredLocked() const
+{
+    return api.isConfigured() && hasConfiguredChatId;
+}
+
+void TelegramBridge::refreshOperationalStateLocked()
+{
+    const bool configured = isConfiguredLocked();
+    if (!bridgeEnabled || !configured) {
+        state = State::STATE_DISABLED;
+        hasPendingMessage = false;
+        pendingMessage.clear();
+        consecutiveSendErrors = 0;
+        nextRetryAtMs = 0;
+        disable();
+
+        if (bridgeEnabled && !configured) {
+            LOG_INFO("Telegram bridge disabled: missing bot token or chat_id");
+        }
+        return;
+    }
+
+    state = isWifiConnected() ? State::STATE_RUNNING : State::STATE_WAIT_WIFI;
+    enabled = true;
+    setIntervalFromNow(0);
 }
 
 bool TelegramBridge::parseChatId(const std::string &rawChatId, int64_t &outChatId) const
@@ -162,19 +490,6 @@ bool TelegramBridge::parseChatId(const std::string &rawChatId, int64_t &outChatI
         return false;
 
     outChatId = static_cast<int64_t>(parsed);
-    return true;
-}
-
-bool TelegramBridge::saveChannelsConfig(const std::string &rawChannels)
-{
-    Preferences prefs;
-    if (!prefs.begin("telegram", false)) {
-        LOG_WARN("Telegram bridge failed to open NVS for channels");
-        return false;
-    }
-
-    prefs.putString("channels", rawChannels.c_str());
-    prefs.end();
     return true;
 }
 
@@ -207,7 +522,7 @@ bool TelegramBridge::parseChannelNumber(const std::string &tokenText, uint8_t &c
     return true;
 }
 
-bool TelegramBridge::applyChannelsConfig(const std::string &rawChannels, bool persist)
+bool TelegramBridge::applyChannelsConfig(const std::string &rawChannels)
 {
     const std::string normalized = trim(rawChannels);
     if (normalized.empty()) {
@@ -215,10 +530,6 @@ bool TelegramBridge::applyChannelsConfig(const std::string &rawChannels, bool pe
         allowedChannels.clear();
         telegramToMeshChannel = channels.getPrimaryIndex();
         channelsConfig.clear();
-
-        if (persist) {
-            saveChannelsConfig(channelsConfig);
-        }
         return true;
     }
 
@@ -251,10 +562,6 @@ bool TelegramBridge::applyChannelsConfig(const std::string &rawChannels, bool pe
     allowedChannels = parsedChannels;
     telegramToMeshChannel = *allowedChannels.begin();
     channelsConfig = normalized;
-
-    if (persist) {
-        saveChannelsConfig(channelsConfig);
-    }
 
     return true;
 }
@@ -304,11 +611,13 @@ bool TelegramBridge::isWifiConnected() const
 
 bool TelegramBridge::matchesConfiguredChat(int64_t incomingChatId) const
 {
+    concurrency::LockGuard guard(&configLock);
     return hasConfiguredChatId && incomingChatId == configuredChatId;
 }
 
 bool TelegramBridge::isSelfInjected(uint32_t packetId) const
 {
+    concurrency::LockGuard guard(&configLock);
     for (size_t i = 0; i < SELF_INJECTED_ID_COUNT; ++i) {
         if (selfInjectedIds[i] == packetId && packetId != 0) {
             return true;
@@ -319,6 +628,7 @@ bool TelegramBridge::isSelfInjected(uint32_t packetId) const
 
 void TelegramBridge::rememberSelfInjected(uint32_t packetId)
 {
+    concurrency::LockGuard guard(&configLock);
     selfInjectedIds[selfInjectedIndex] = packetId;
     selfInjectedIndex = (selfInjectedIndex + 1) % SELF_INJECTED_ID_COUNT;
 }
@@ -348,14 +658,26 @@ void TelegramBridge::enqueueTelegramMessage(const std::string &text)
 
 void TelegramBridge::sendQueuedMessages()
 {
-    if (!api.isConfigured() || chatId.empty())
+    std::string targetChatId;
+    uint32_t currentSendIntervalMs = TELEGRAM_SEND_INTERVAL_MS;
+    {
+        concurrency::LockGuard guard(&configLock);
+        if (state == State::STATE_DISABLED || !isConfiguredLocked() || chatId.empty()) {
+            return;
+        }
+        targetChatId = chatId;
+        currentSendIntervalMs = sendIntervalMs;
+    }
+
+    if (targetChatId.empty()) {
         return;
+    }
 
     const uint32_t now = millis();
     if (nextRetryAtMs != 0 && static_cast<int32_t>(now - nextRetryAtMs) < 0)
         return;
 
-    if (static_cast<uint32_t>(now - lastSendAtMs) < sendIntervalMs)
+    if (static_cast<uint32_t>(now - lastSendAtMs) < currentSendIntervalMs)
         return;
 
     if (!hasPendingMessage) {
@@ -368,7 +690,7 @@ void TelegramBridge::sendQueuedMessages()
         hasPendingMessage = true;
     }
 
-    if (api.sendMessage(chatId, pendingMessage)) {
+    if (api.sendMessage(targetChatId, pendingMessage)) {
         hasPendingMessage = false;
         pendingMessage.clear();
         consecutiveSendErrors = 0;
@@ -379,7 +701,7 @@ void TelegramBridge::sendQueuedMessages()
 
     consecutiveSendErrors = std::min<uint8_t>(consecutiveSendErrors + 1, 10);
 
-    uint32_t backoffMs = sendIntervalMs;
+    uint32_t backoffMs = currentSendIntervalMs;
     for (uint8_t i = 0; i < consecutiveSendErrors; ++i) {
         if (backoffMs >= (MAX_BACKOFF_MS / 2)) {
             backoffMs = MAX_BACKOFF_MS;
@@ -394,8 +716,17 @@ void TelegramBridge::sendQueuedMessages()
 
 void TelegramBridge::processIncomingTelegram()
 {
+    uint32_t timeoutSec = TELEGRAM_LONG_POLL_TIMEOUT;
+    {
+        concurrency::LockGuard guard(&configLock);
+        if (state == State::STATE_DISABLED || !isConfiguredLocked()) {
+            return;
+        }
+        timeoutSec = longPollTimeoutSec;
+    }
+
     TelegramMessage updates[TELEGRAM_UPDATE_BATCH_SIZE];
-    const int count = api.getUpdates(updates, TELEGRAM_UPDATE_BATCH_SIZE, longPollTimeoutSec);
+    const int count = api.getUpdates(updates, TELEGRAM_UPDATE_BATCH_SIZE, timeoutSec);
     if (count <= 0)
         return;
 
@@ -431,17 +762,46 @@ bool TelegramBridge::handleTelegramCommand(const TelegramMessage &message)
 
     static const std::string channelsCommand = "/config channels";
     if (command.rfind(channelsCommand, 0) == 0) {
-        const std::string value = trim(command.substr(channelsCommand.size()));
-        if (!applyChannelsConfig(value, true)) {
+        TelegramControlPatch patch;
+        patch.hasChannels = true;
+        patch.channels = trim(command.substr(channelsCommand.size()));
+
+        const TelegramControlResult updateResult = applyControlPatch(patch, TelegramControlSource::TELEGRAM_CHAT);
+        if (!updateResult.ok()) {
             enqueueTelegramMessage("Invalid channels. Use: /config channels 0,1,3");
             return true;
         }
 
-        if (allowAllChannels) {
+        TelegramControlSnapshot snapshot = getControlSnapshot();
+        if (snapshot.allowAllChannels) {
             enqueueTelegramMessage("Channels updated: all");
         } else {
-            enqueueTelegramMessage("Channels updated: " + channelsConfig);
+            enqueueTelegramMessage("Channels updated: " + snapshot.channels);
         }
+        return true;
+    }
+
+    static const std::string enabledCommand = "/config enabled";
+    if (command.rfind(enabledCommand, 0) == 0) {
+        const std::string value = trim(command.substr(enabledCommand.size()));
+
+        bool newEnabled = false;
+        if (value == "1" || value == "on" || value == "true") {
+            newEnabled = true;
+        } else if (value == "0" || value == "off" || value == "false") {
+            newEnabled = false;
+        } else {
+            enqueueTelegramMessage("Invalid value. Use: /config enabled on|off");
+            return true;
+        }
+
+        const TelegramControlResult updateResult = setEnabled(newEnabled, TelegramControlSource::TELEGRAM_CHAT);
+        if (!updateResult.ok()) {
+            enqueueTelegramMessage("Failed to update Telegram enabled state");
+            return true;
+        }
+
+        enqueueTelegramMessage(newEnabled ? "Telegram bridge enabled" : "Telegram bridge disabled");
         return true;
     }
 
@@ -450,28 +810,31 @@ bool TelegramBridge::handleTelegramCommand(const TelegramMessage &message)
 
 std::string TelegramBridge::buildStatusMessage()
 {
+    TelegramControlSnapshot snapshot = getControlSnapshot();
+
     std::string status = "<b>Telegram bridge</b>\n";
     status += "state: ";
-    switch (state) {
-    case State::STATE_RUNNING:
-        status += "running";
-        break;
-    case State::STATE_WAIT_WIFI:
-        status += "wait_wifi";
-        break;
-    case State::STATE_DISABLED:
-    default:
+    if (!snapshot.enabled) {
         status += "disabled";
-        break;
+    } else if (snapshot.running) {
+        status += "running";
+    } else {
+        status += "wait_wifi";
     }
+
+    status += "\nconfigured: ";
+    status += snapshot.configured ? "yes" : "no";
+
     status += "\nwifi: ";
-    status += isWifiConnected() ? "connected" : "disconnected";
+    status += snapshot.wifiConnected ? "connected" : "disconnected";
+
     status += "\nqueue: ";
-    status += std::to_string(messageQueue.numUsed());
+    status += std::to_string(snapshot.queueUsed);
     status += "/";
-    status += std::to_string(TELEGRAM_MAX_QUEUE_SIZE);
+    status += std::to_string(snapshot.queueCapacity);
+
     status += "\nchannels: ";
-    status += allowAllChannels ? "all" : channelsConfig;
+    status += snapshot.allowAllChannels ? "all" : snapshot.channels;
 
     return truncateUtf8(status, TELEGRAM_MAX_TEXT_SIZE);
 }
@@ -539,9 +902,15 @@ bool TelegramBridge::injectToMesh(const std::string &text, const std::string &se
     if (payload.empty())
         return false;
 
+    uint8_t channel = 0;
+    {
+        concurrency::LockGuard guard(&configLock);
+        channel = telegramToMeshChannel;
+    }
+
     meshtastic_MeshPacket *packet = router->allocForSending();
     packet->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
-    packet->channel = telegramToMeshChannel;
+    packet->channel = channel;
     packet->decoded.payload.size = payload.size();
     memcpy(packet->decoded.payload.bytes, payload.data(), payload.size());
 
