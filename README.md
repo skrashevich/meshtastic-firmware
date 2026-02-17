@@ -1,15 +1,7 @@
 <div align="center" markdown="1">
 
 <img src=".github/meshtastic_logo.png" alt="Meshtastic Logo" width="80"/>
-<h1>Meshtastic Firmware</h1>
-
-![GitHub release downloads](https://img.shields.io/github/downloads/meshtastic/firmware/total)
-[![CI](https://img.shields.io/github/actions/workflow/status/meshtastic/firmware/main_matrix.yml?branch=master&label=actions&logo=github&color=yellow)](https://github.com/meshtastic/firmware/actions/workflows/ci.yml)
-[![CLA assistant](https://cla-assistant.io/readme/badge/meshtastic/firmware)](https://cla-assistant.io/meshtastic/firmware)
-[![Fiscal Contributors](https://opencollective.com/meshtastic/tiers/badge.svg?label=Fiscal%20Contributors&color=deeppink)](https://opencollective.com/meshtastic/)
-[![Vercel](https://img.shields.io/static/v1?label=Powered%20by&message=Vercel&style=flat&logo=vercel&color=000000)](https://vercel.com?utm_source=meshtastic&utm_campaign=oss)
-
-<a href="https://trendshift.io/repositories/5524" target="_blank"><img src="https://trendshift.io/api/badge/repositories/5524" alt="meshtastic%2Ffirmware | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<h1>Meshtastic Firmware (Russian Fork)</h1>
 
 </div>
 
@@ -19,21 +11,36 @@
 	<a href="https://meshtastic.org">Website</a>
 	-
 	<a href="https://meshtastic.org/docs/">Documentation</a>
+	-
+	<a href="https://github.com/meshtastic/firmware">Upstream Repo</a>
 </div>
 
 ## Overview
 
-This repository contains the official device firmware for Meshtastic, an open-source LoRa mesh networking project designed for long-range, low-power communication without relying on internet or cellular infrastructure. The firmware supports various hardware platforms, including ESP32, nRF52, RP2040/RP2350, and Linux-based devices.
+This is a fork of the [official Meshtastic firmware](https://github.com/meshtastic/firmware) with Russian language support. The fork is regularly synced with upstream and adds the following features:
 
-Meshtastic enables text messaging, location sharing, and telemetry over a decentralized mesh network, making it ideal for outdoor adventures, emergency preparedness, and remote operations.
+<img src=".github/screenshot_ru.jpg" alt="T-Deck with Russian keyboard" width="300"/>
 
-### Get Started
+### Russian Language Features
 
-- 🔧 **[Building Instructions](https://meshtastic.org/docs/development/firmware/build)** – Learn how to compile the firmware from source.
+- **Russian OLED display** — Cyrillic text rendering on OLED screens (via `OLED_RU` build flag)
+- **Russian keyboard for T-Deck** — Full Russian keyboard layout with EN/RU switching via the [device-ui fork](https://github.com/skrashevich/device-ui/tree/feat-russian-keyboard)
+
+### Supported Devices
+
+| Device | Russian OLED | Russian Keyboard |
+|--------|:---:|:---:|
+| T-Deck (TFT) | ✅ | ✅ |
+| Other devices with OLED | ✅ | — |
+
+### Building
+
+Follow the standard [Meshtastic build instructions](https://meshtastic.org/docs/development/firmware/build). To build the T-Deck firmware with Russian support:
+
+```bash
+pio run -e t-deck-tft
+```
+
+### Flashing
+
 - ⚡ **[Flashing Instructions](https://meshtastic.org/docs/getting-started/flashing-firmware/)** – Install or update the firmware on your device.
-
-Join our community and help improve Meshtastic! 🚀
-
-## Stats
-
-![Alt](https://repobeats.axiom.co/api/embed/8025e56c482ec63541593cc5bd322c19d5c0bdcf.svg "Repobeats analytics image")
