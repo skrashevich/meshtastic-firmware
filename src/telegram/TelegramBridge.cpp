@@ -17,6 +17,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 TelegramBridge *telegramBridge = nullptr;
 
@@ -32,6 +33,11 @@ constexpr uint32_t MIN_SEND_INTERVAL_MS = 200;
 constexpr uint32_t MAX_SEND_INTERVAL_MS = 10000;
 constexpr uint32_t MAX_LONG_POLL_TIMEOUT_SEC = 60;
 constexpr size_t TELEGRAM_UPDATE_BATCH_SIZE = 8;
+// Stack size for the HTTP task (HTTPS + TLS needs significant stack)
+constexpr uint32_t HTTP_TASK_STACK_SIZE = 12288;
+// Queue depth for incoming Telegram messages
+constexpr size_t INCOMING_QUEUE_DEPTH = 32;
+static_assert(TELEGRAM_HISTORY_MAX_ENTRIES > 0, "TELEGRAM_HISTORY_MAX_ENTRIES must be greater than zero");
 
 size_t utf8SafePrefixLength(const std::string &value, size_t maxBytes)
 {
@@ -92,6 +98,49 @@ const char *sourceToString(TelegramControlSource source)
     }
 }
 
+bool isValidDirectionMode(uint8_t rawMode)
+{
+    return rawMode == static_cast<uint8_t>(TelegramDirectionMode::BOTH) ||
+           rawMode == static_cast<uint8_t>(TelegramDirectionMode::MESH_TO_TELEGRAM) ||
+           rawMode == static_cast<uint8_t>(TelegramDirectionMode::TELEGRAM_TO_MESH);
+}
+
+bool allowsMeshToTelegram(TelegramDirectionMode mode)
+{
+    return mode == TelegramDirectionMode::BOTH || mode == TelegramDirectionMode::MESH_TO_TELEGRAM;
+}
+
+bool allowsTelegramToMesh(TelegramDirectionMode mode)
+{
+    return mode == TelegramDirectionMode::BOTH || mode == TelegramDirectionMode::TELEGRAM_TO_MESH;
+}
+
+bool historyDirectionMatches(TelegramHistoryDirection direction, TelegramHistoryFilterDirection filter)
+{
+    if (filter == TelegramHistoryFilterDirection::BOTH) {
+        return true;
+    }
+
+    if (filter == TelegramHistoryFilterDirection::OUTGOING) {
+        return direction == TelegramHistoryDirection::OUTGOING;
+    }
+
+    return direction == TelegramHistoryDirection::INCOMING;
+}
+
+const char *directionToString(TelegramDirectionMode mode)
+{
+    switch (mode) {
+    case TelegramDirectionMode::MESH_TO_TELEGRAM:
+        return "mesh_to_telegram";
+    case TelegramDirectionMode::TELEGRAM_TO_MESH:
+        return "telegram_to_mesh";
+    case TelegramDirectionMode::BOTH:
+    default:
+        return "both";
+    }
+}
+
 } // namespace
 
 void telegramInit()
@@ -105,7 +154,7 @@ TelegramControlSnapshot telegramGetControlSnapshot()
 {
     if (!telegramBridge) {
         TelegramControlSnapshot snapshot;
-        snapshot.featureAvailable = true;
+        snapshot.featureAvailable = false;
         snapshot.queueCapacity = TELEGRAM_MAX_QUEUE_SIZE;
         return snapshot;
     }
@@ -137,9 +186,42 @@ TelegramControlResult telegramSetEnabled(bool enabled, TelegramControlSource sou
     return telegramBridge->setEnabled(enabled, source);
 }
 
+std::vector<TelegramHistoryEntry> telegramGetHistory(const std::string &chatIdFilter,
+                                                     TelegramHistoryFilterDirection directionFilter, size_t limit)
+{
+    if (!telegramBridge) {
+        return std::vector<TelegramHistoryEntry>();
+    }
+
+    return telegramBridge->getHistory(chatIdFilter, directionFilter, limit);
+}
+
+std::vector<TelegramHistoryChatSummary> telegramGetHistoryChats(size_t limit)
+{
+    if (!telegramBridge) {
+        return std::vector<TelegramHistoryChatSummary>();
+    }
+
+    return telegramBridge->getHistoryChats(limit);
+}
+
+bool telegramClearHistory()
+{
+    if (!telegramBridge) {
+        return false;
+    }
+
+    telegramBridge->clearHistory();
+    return true;
+}
+
 TelegramBridge::TelegramBridge() : concurrency::OSThread("telegram"), messageQueue(TELEGRAM_MAX_QUEUE_SIZE)
 {
-    messageQueue.setReader(this);
+    _incomingQueue = xQueueCreate(INCOMING_QUEUE_DEPTH, sizeof(TelegramMessage *));
+    if (!_incomingQueue) {
+        LOG_ERROR("Telegram bridge failed to create incoming queue");
+    }
+
     loadConfig();
 
     if (textMessageModule != nullptr) {
@@ -176,6 +258,9 @@ TelegramControlSnapshot TelegramBridge::getControlSnapshot()
     snapshot.pollIntervalMs = pollIntervalMs;
     snapshot.longPollTimeoutSec = longPollTimeoutSec;
     snapshot.sendIntervalMs = sendIntervalMs;
+    snapshot.directionMode = directionMode;
+    snapshot.meshToTelegramEnabled = allowsMeshToTelegram(directionMode);
+    snapshot.telegramToMeshEnabled = allowsTelegramToMesh(directionMode);
 
     snapshot.hasToken = !token.empty();
     snapshot.hasChatId = hasConfiguredChatId;
@@ -190,6 +275,106 @@ TelegramControlResult TelegramBridge::setEnabled(bool enabledSetting, TelegramCo
     patch.hasEnabled = true;
     patch.enabled = enabledSetting;
     return applyControlPatch(patch, source);
+}
+
+std::vector<TelegramHistoryEntry> TelegramBridge::getHistory(const std::string &chatIdFilter,
+                                                             TelegramHistoryFilterDirection directionFilter, size_t limit)
+{
+    std::vector<TelegramHistoryEntry> result;
+    if (limit == 0) {
+        return result;
+    }
+
+    const std::string normalizedChatId = trim(chatIdFilter);
+    const size_t boundedLimit = std::min(limit, static_cast<size_t>(TELEGRAM_HISTORY_MAX_ENTRIES));
+    result.reserve(boundedLimit);
+
+    concurrency::LockGuard guard(&configLock);
+    for (size_t i = 0; i < historyCount && result.size() < boundedLimit; ++i) {
+        const size_t reverseIndex = historyCount - 1 - i;
+        const size_t index = (historyHead + reverseIndex) % TELEGRAM_HISTORY_MAX_ENTRIES;
+        const TelegramHistoryEntry &entry = historyEntries[index].entry;
+
+        if (!normalizedChatId.empty() && entry.chatId != normalizedChatId) {
+            continue;
+        }
+
+        if (!historyDirectionMatches(entry.direction, directionFilter)) {
+            continue;
+        }
+
+        result.push_back(entry);
+    }
+
+    return result;
+}
+
+std::vector<TelegramHistoryChatSummary> TelegramBridge::getHistoryChats(size_t limit)
+{
+    std::vector<TelegramHistoryChatSummary> summaries;
+
+    concurrency::LockGuard guard(&configLock);
+    summaries.reserve(std::min(historyCount, static_cast<size_t>(TELEGRAM_HISTORY_MAX_ENTRIES)));
+
+    for (size_t i = 0; i < historyCount; ++i) {
+        const size_t index = (historyHead + i) % TELEGRAM_HISTORY_MAX_ENTRIES;
+        const TelegramHistoryEntry &entry = historyEntries[index].entry;
+        if (entry.chatId.empty()) {
+            continue;
+        }
+
+        auto summary = std::find_if(summaries.begin(), summaries.end(), [&entry](const TelegramHistoryChatSummary &candidate) {
+            return candidate.chatId == entry.chatId;
+        });
+
+        if (summary == summaries.end()) {
+            TelegramHistoryChatSummary created;
+            created.chatId = entry.chatId;
+            summaries.push_back(created);
+            summary = summaries.end() - 1;
+        }
+
+        if (entry.direction == TelegramHistoryDirection::INCOMING) {
+            if (summary->incomingCount < std::numeric_limits<uint16_t>::max()) {
+                summary->incomingCount++;
+            }
+        } else {
+            if (summary->outgoingCount < std::numeric_limits<uint16_t>::max()) {
+                summary->outgoingCount++;
+            }
+        }
+
+        if (entry.timestampMs > summary->lastTimestampMs) {
+            summary->lastTimestampMs = entry.timestampMs;
+        }
+    }
+
+    std::sort(summaries.begin(), summaries.end(),
+              [](const TelegramHistoryChatSummary &left, const TelegramHistoryChatSummary &right) {
+                  return left.lastTimestampMs > right.lastTimestampMs;
+              });
+
+    if (limit > 0 && summaries.size() > limit) {
+        summaries.resize(limit);
+    }
+
+    return summaries;
+}
+
+void TelegramBridge::clearHistory()
+{
+    concurrency::LockGuard guard(&configLock);
+    for (size_t i = 0; i < TELEGRAM_HISTORY_MAX_ENTRIES; ++i) {
+        historyEntries[i].entry.chatId.clear();
+        historyEntries[i].entry.sender.clear();
+        historyEntries[i].entry.text.clear();
+        historyEntries[i].entry.timestampMs = 0;
+        historyEntries[i].entry.direction = TelegramHistoryDirection::OUTGOING;
+        historyEntries[i].entry.status = TelegramHistoryStatus::QUEUED;
+    }
+
+    historyHead = 0;
+    historyCount = 0;
 }
 
 TelegramControlResult TelegramBridge::applyControlPatch(const TelegramControlPatch &patch, TelegramControlSource source)
@@ -223,6 +408,14 @@ TelegramControlResult TelegramBridge::applyControlPatch(const TelegramControlPat
         }
     }
 
+    if (patch.hasDirectionMode) {
+        if (!isValidDirectionMode(static_cast<uint8_t>(patch.directionMode))) {
+            result.error = TelegramControlError::INVALID_ARGUMENT;
+            result.message = "directionMode is invalid";
+            return result;
+        }
+    }
+
     if (patch.hasEnabled && patch.enabled != bridgeEnabled) {
         bridgeEnabled = patch.enabled;
         changed = true;
@@ -232,7 +425,7 @@ TelegramControlResult TelegramBridge::applyControlPatch(const TelegramControlPat
         const std::string newToken = trim(patch.token);
         if (newToken != token) {
             token = newToken;
-            api.setToken(token.c_str());
+            // Note: api.setToken() is applied by the HTTP task at the start of each iteration
             changed = true;
         }
     }
@@ -293,6 +486,11 @@ TelegramControlResult TelegramBridge::applyControlPatch(const TelegramControlPat
         changed = true;
     }
 
+    if (patch.hasDirectionMode && directionMode != patch.directionMode) {
+        directionMode = patch.directionMode;
+        changed = true;
+    }
+
     result.changed = changed;
     if (!changed) {
         result.persisted = true;
@@ -321,20 +519,181 @@ TelegramControlResult TelegramBridge::applyControlPatch(const TelegramControlPat
     return result;
 }
 
+// ─── HTTP task management ────────────────────────────────────────────────────
+
+void TelegramBridge::httpTaskEntryPoint(void *param)
+{
+    static_cast<TelegramBridge *>(param)->httpTaskLoop();
+    vTaskDelete(nullptr);
+}
+
+void TelegramBridge::startHttpTask()
+{
+    if (_httpTaskHandle != nullptr) {
+        return; // already running or previous stop not yet complete
+    }
+
+    _httpTaskShouldStop = false;
+
+    TaskHandle_t handle = nullptr;
+    const BaseType_t result =
+        xTaskCreate(httpTaskEntryPoint, "tg_http", HTTP_TASK_STACK_SIZE, this, 1, &handle);
+
+    if (result == pdPASS) {
+        _httpTaskHandle = handle;
+        LOG_INFO("Telegram HTTP task started");
+    } else {
+        LOG_ERROR("Telegram HTTP task creation failed");
+    }
+}
+
+void TelegramBridge::stopHttpTask()
+{
+    if (_httpTaskHandle == nullptr) {
+        return;
+    }
+    // Signal task to exit. The task will set _httpTaskHandle = nullptr on exit.
+    _httpTaskShouldStop = true;
+    LOG_INFO("Telegram HTTP task stop requested");
+}
+
+/**
+ * Runs in a dedicated FreeRTOS task. All blocking HTTPS calls happen here so
+ * the main OSThread scheduler is never blocked.
+ *
+ * Thread-safety contract:
+ *   - Reads config fields under configLock (short critical sections only)
+ *   - All HTTPS I/O happens WITHOUT the lock held
+ *   - Writes history via appendHistory() which acquires configLock internally
+ *   - Puts received TelegramMessage* into _incomingQueue for runOnce() to process
+ */
+void TelegramBridge::httpTaskLoop()
+{
+    bool hasPending = false;
+    std::string pending;
+    std::string pendingChatId;
+    uint32_t nextRetryMs = 0;
+    uint8_t sendErrors = 0;
+    uint32_t lastPollMs = 0;
+
+    while (!_httpTaskShouldStop) {
+        // Short delay so we can check the stop flag frequently
+        vTaskDelay(pdMS_TO_TICKS(200));
+
+        if (_httpTaskShouldStop) {
+            break;
+        }
+
+        // Snapshot config under lock (avoid holding lock during HTTPS calls)
+        std::string localToken, localChatId;
+        uint32_t localSendInterval, localPollInterval, localLongPollTimeout;
+        TelegramDirectionMode localDirection;
+        {
+            concurrency::LockGuard guard(&configLock);
+            if (!isConfiguredLocked()) {
+                continue;
+            }
+            localToken = token;
+            localChatId = chatId;
+            localSendInterval = sendIntervalMs;
+            localPollInterval = pollIntervalMs;
+            localLongPollTimeout = longPollTimeoutSec;
+            localDirection = directionMode;
+        }
+
+        // Keep API token in sync (only the HTTP task calls api methods)
+        api.setToken(localToken.c_str());
+
+        const uint32_t now = millis();
+
+        // ── Send outgoing messages (mesh → Telegram) ────────────────────────
+        if (allowsMeshToTelegram(localDirection)) {
+            const bool retryReady = (nextRetryMs == 0 || static_cast<int32_t>(now - nextRetryMs) >= 0);
+
+            if (retryReady) {
+                if (!hasPending) {
+                    QueueEntry *entry = messageQueue.dequeuePtr(0);
+                    if (entry) {
+                        pending = std::move(entry->text);
+                        pendingChatId = localChatId;
+                        delete entry;
+                        hasPending = true;
+                        appendHistory(TelegramHistoryDirection::OUTGOING, TelegramHistoryStatus::QUEUED,
+                                      pendingChatId, "", pending);
+                    }
+                }
+
+                if (hasPending && !_httpTaskShouldStop) {
+                    if (api.sendMessage(pendingChatId, pending)) {
+                        appendHistory(TelegramHistoryDirection::OUTGOING, TelegramHistoryStatus::SENT,
+                                      pendingChatId, "", pending);
+                        hasPending = false;
+                        pending.clear();
+                        sendErrors = 0;
+                        nextRetryMs = 0;
+                    } else {
+                        appendHistory(TelegramHistoryDirection::OUTGOING, TelegramHistoryStatus::SEND_FAILED,
+                                      pendingChatId, "", pending);
+                        sendErrors = std::min<uint8_t>(sendErrors + 1, 10);
+                        uint32_t backoff = localSendInterval;
+                        for (uint8_t i = 0; i < sendErrors; ++i) {
+                            if (backoff >= MAX_BACKOFF_MS / 2) {
+                                backoff = MAX_BACKOFF_MS;
+                                break;
+                            }
+                            backoff *= 2;
+                        }
+                        nextRetryMs = now + backoff;
+                        LOG_WARN("Telegram send failed, retry in %u ms", backoff);
+                    }
+                }
+            }
+        }
+
+        if (_httpTaskShouldStop) {
+            break;
+        }
+
+        // ── Poll for incoming messages (Telegram → mesh) ────────────────────
+        if (allowsTelegramToMesh(localDirection) &&
+            static_cast<uint32_t>(now - lastPollMs) >= localPollInterval) {
+            lastPollMs = now;
+
+            TelegramMessage updates[TELEGRAM_UPDATE_BATCH_SIZE];
+            const int count = api.getUpdates(updates, TELEGRAM_UPDATE_BATCH_SIZE, localLongPollTimeout);
+
+            for (int i = 0; i < count && !_httpTaskShouldStop; ++i) {
+                TelegramMessage *msg = new TelegramMessage(std::move(updates[i]));
+                if (xQueueSendToBack(_incomingQueue, &msg, 0) != pdTRUE) {
+                    LOG_WARN("Telegram incoming queue full, dropping message");
+                    delete msg;
+                }
+            }
+        }
+    }
+
+    // Signal to startHttpTask() that it is safe to create a new task
+    _httpTaskHandle = nullptr;
+    LOG_INFO("Telegram HTTP task stopped");
+}
+
+// ─── Main OSThread runOnce ───────────────────────────────────────────────────
+
 int32_t TelegramBridge::runOnce()
 {
     State currentState = State::STATE_DISABLED;
-    uint32_t currentPollIntervalMs = TELEGRAM_POLL_INTERVAL_MS;
     {
         concurrency::LockGuard guard(&configLock);
         currentState = state;
-        currentPollIntervalMs = pollIntervalMs;
     }
 
-    if (currentState == State::STATE_DISABLED)
+    if (currentState == State::STATE_DISABLED) {
+        stopHttpTask();
         return disable();
+    }
 
     if (!isWifiConnected()) {
+        stopHttpTask();
         bool needsLog = false;
         {
             concurrency::LockGuard guard(&configLock);
@@ -355,14 +714,21 @@ int32_t TelegramBridge::runOnce()
         }
     }
 
-    sendQueuedMessages();
+    // Ensure the HTTP task is running (idempotent)
+    startHttpTask();
 
-    const uint32_t now = millis();
-    if (static_cast<uint32_t>(now - lastPollAtMs) >= currentPollIntervalMs) {
-        processIncomingTelegram();
-        lastPollAtMs = now;
+    // Process incoming messages from HTTP task (non-blocking)
+    if (_incomingQueue != nullptr) {
+        TelegramMessage *msg = nullptr;
+        while (xQueueReceive(_incomingQueue, &msg, 0) == pdTRUE && msg != nullptr) {
+            processIncomingMessage(msg);
+            delete msg;
+            msg = nullptr;
+        }
     }
 
+    // Periodic heap check
+    const uint32_t now = millis();
     if (static_cast<uint32_t>(now - lastHeapWarnMs) >= HEAP_WARN_INTERVAL_MS) {
         lastHeapWarnMs = now;
         const uint32_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
@@ -374,6 +740,46 @@ int32_t TelegramBridge::runOnce()
     return RUN_INTERVAL_MS;
 }
 
+// ─── Incoming message processing (called from main OSThread) ─────────────────
+
+void TelegramBridge::processIncomingMessage(const TelegramMessage *msg)
+{
+    if (msg == nullptr) {
+        return;
+    }
+
+    const std::string incomingChatId = std::to_string(msg->chat_id);
+
+    if (!matchesConfiguredChat(msg->chat_id)) {
+        appendHistory(TelegramHistoryDirection::INCOMING, TelegramHistoryStatus::IGNORED_CHAT,
+                      incomingChatId, msg->from_name, msg->text);
+        return;
+    }
+
+    appendHistory(TelegramHistoryDirection::INCOMING, TelegramHistoryStatus::RECEIVED,
+                  incomingChatId, msg->from_name, msg->text);
+
+    if (handleTelegramCommand(*msg)) {
+        appendHistory(TelegramHistoryDirection::INCOMING, TelegramHistoryStatus::COMMAND,
+                      incomingChatId, msg->from_name, msg->text);
+        return;
+    }
+
+    {
+        concurrency::LockGuard guard(&configLock);
+        if (!allowsTelegramToMesh(directionMode)) {
+            return;
+        }
+    }
+
+    const bool injected = injectToMesh(msg->text, msg->from_name);
+    appendHistory(TelegramHistoryDirection::INCOMING,
+                  injected ? TelegramHistoryStatus::INJECTED : TelegramHistoryStatus::INJECT_FAILED,
+                  incomingChatId, msg->from_name, msg->text);
+}
+
+// ─── Mesh packet observer ────────────────────────────────────────────────────
+
 int TelegramBridge::onNotify(const meshtastic_MeshPacket *packet)
 {
     if (packet == nullptr)
@@ -381,7 +787,7 @@ int TelegramBridge::onNotify(const meshtastic_MeshPacket *packet)
 
     {
         concurrency::LockGuard guard(&configLock);
-        if (state == State::STATE_DISABLED || !isChannelAllowed(packet->channel)) {
+        if (state == State::STATE_DISABLED || !allowsMeshToTelegram(directionMode) || !isChannelAllowed(packet->channel)) {
             return 0;
         }
     }
@@ -397,6 +803,8 @@ int TelegramBridge::onNotify(const meshtastic_MeshPacket *packet)
     return 0;
 }
 
+// ─── Configuration ────────────────────────────────────────────────────────────
+
 void TelegramBridge::loadConfig()
 {
     token = TELEGRAM_BOT_TOKEN;
@@ -406,6 +814,7 @@ void TelegramBridge::loadConfig()
     pollIntervalMs = TELEGRAM_POLL_INTERVAL_MS;
     longPollTimeoutSec = TELEGRAM_LONG_POLL_TIMEOUT;
     sendIntervalMs = TELEGRAM_SEND_INTERVAL_MS;
+    directionMode = TelegramDirectionMode::BOTH;
 
     Preferences prefs;
     if (prefs.begin("telegram", true)) {
@@ -416,6 +825,12 @@ void TelegramBridge::loadConfig()
         pollIntervalMs = prefs.getUInt("poll_ms", pollIntervalMs);
         longPollTimeoutSec = prefs.getUInt("long_poll", longPollTimeoutSec);
         sendIntervalMs = prefs.getUInt("send_ms", sendIntervalMs);
+
+        const uint8_t rawDirection = prefs.getUChar("direction", static_cast<uint8_t>(directionMode));
+        if (isValidDirectionMode(rawDirection)) {
+            directionMode = static_cast<TelegramDirectionMode>(rawDirection);
+        }
+
         prefs.end();
     }
 
@@ -423,7 +838,8 @@ void TelegramBridge::loadConfig()
     longPollTimeoutSec = normalizeLongPollTimeout(longPollTimeoutSec);
     sendIntervalMs = normalizeSendInterval(sendIntervalMs);
 
-    api.setToken(token.c_str());
+    // Note: api.setToken() is NOT called here — the HTTP task applies the token
+    // at the start of each iteration to avoid data races.
     hasConfiguredChatId = parseChatId(chatId, configuredChatId);
     if (!applyChannelsConfig(channelsConfig)) {
         LOG_WARN("Invalid Telegram channels config in NVS, fallback to all channels");
@@ -447,13 +863,16 @@ bool TelegramBridge::saveSettingsToNvsLocked()
     prefs.putUInt("poll_ms", pollIntervalMs);
     prefs.putUInt("long_poll", longPollTimeoutSec);
     prefs.putUInt("send_ms", sendIntervalMs);
+    prefs.putUChar("direction", static_cast<uint8_t>(directionMode));
     prefs.end();
     return true;
 }
 
 bool TelegramBridge::isConfiguredLocked() const
 {
-    return api.isConfigured() && hasConfiguredChatId;
+    // Use TelegramBridge::token directly to avoid data races with the HTTP task
+    // (api.isConfigured() reads api::token which is only written by the HTTP task)
+    return !token.empty() && hasConfiguredChatId;
 }
 
 void TelegramBridge::refreshOperationalStateLocked()
@@ -461,10 +880,8 @@ void TelegramBridge::refreshOperationalStateLocked()
     const bool configured = isConfiguredLocked();
     if (!bridgeEnabled || !configured) {
         state = State::STATE_DISABLED;
-        hasPendingMessage = false;
-        pendingMessage.clear();
-        consecutiveSendErrors = 0;
-        nextRetryAtMs = 0;
+        // Request the HTTP task to stop (non-blocking)
+        _httpTaskShouldStop = true;
         disable();
 
         if (bridgeEnabled && !configured) {
@@ -477,6 +894,8 @@ void TelegramBridge::refreshOperationalStateLocked()
     enabled = true;
     setIntervalFromNow(0);
 }
+
+// ─── Utility helpers ─────────────────────────────────────────────────────────
 
 bool TelegramBridge::parseChatId(const std::string &rawChatId, int64_t &outChatId) const
 {
@@ -633,6 +1052,39 @@ void TelegramBridge::rememberSelfInjected(uint32_t packetId)
     selfInjectedIndex = (selfInjectedIndex + 1) % SELF_INJECTED_ID_COUNT;
 }
 
+void TelegramBridge::appendHistory(TelegramHistoryDirection direction, TelegramHistoryStatus status,
+                                   const std::string &chat, const std::string &sender, const std::string &text)
+{
+    concurrency::LockGuard guard(&configLock);
+    appendHistoryLocked(direction, status, chat, sender, text);
+}
+
+void TelegramBridge::appendHistoryLocked(TelegramHistoryDirection direction, TelegramHistoryStatus status,
+                                         const std::string &chat, const std::string &sender, const std::string &text)
+{
+    TelegramHistoryEntry entry;
+    entry.timestampMs = millis();
+    entry.chatId = trim(chat);
+    if (entry.chatId.empty()) {
+        entry.chatId = "unknown";
+    }
+
+    entry.sender = truncateUtf8(trim(sender), 64);
+    entry.text = truncateUtf8(text, TELEGRAM_HISTORY_TEXT_MAX_SIZE);
+    entry.direction = direction;
+    entry.status = status;
+
+    size_t writeIndex = (historyHead + historyCount) % TELEGRAM_HISTORY_MAX_ENTRIES;
+    if (historyCount == TELEGRAM_HISTORY_MAX_ENTRIES) {
+        writeIndex = historyHead;
+        historyHead = (historyHead + 1) % TELEGRAM_HISTORY_MAX_ENTRIES;
+    } else {
+        historyCount++;
+    }
+
+    historyEntries[writeIndex].entry = std::move(entry);
+}
+
 void TelegramBridge::enqueueTelegramMessage(const std::string &text)
 {
     std::string payload = truncateUtf8(text, TELEGRAM_MAX_TEXT_SIZE);
@@ -656,93 +1108,7 @@ void TelegramBridge::enqueueTelegramMessage(const std::string &text)
     }
 }
 
-void TelegramBridge::sendQueuedMessages()
-{
-    std::string targetChatId;
-    uint32_t currentSendIntervalMs = TELEGRAM_SEND_INTERVAL_MS;
-    {
-        concurrency::LockGuard guard(&configLock);
-        if (state == State::STATE_DISABLED || !isConfiguredLocked() || chatId.empty()) {
-            return;
-        }
-        targetChatId = chatId;
-        currentSendIntervalMs = sendIntervalMs;
-    }
-
-    if (targetChatId.empty()) {
-        return;
-    }
-
-    const uint32_t now = millis();
-    if (nextRetryAtMs != 0 && static_cast<int32_t>(now - nextRetryAtMs) < 0)
-        return;
-
-    if (static_cast<uint32_t>(now - lastSendAtMs) < currentSendIntervalMs)
-        return;
-
-    if (!hasPendingMessage) {
-        QueueEntry *entry = messageQueue.dequeuePtr(0);
-        if (!entry)
-            return;
-
-        pendingMessage = std::move(entry->text);
-        delete entry;
-        hasPendingMessage = true;
-    }
-
-    if (api.sendMessage(targetChatId, pendingMessage)) {
-        hasPendingMessage = false;
-        pendingMessage.clear();
-        consecutiveSendErrors = 0;
-        nextRetryAtMs = 0;
-        lastSendAtMs = now;
-        return;
-    }
-
-    consecutiveSendErrors = std::min<uint8_t>(consecutiveSendErrors + 1, 10);
-
-    uint32_t backoffMs = currentSendIntervalMs;
-    for (uint8_t i = 0; i < consecutiveSendErrors; ++i) {
-        if (backoffMs >= (MAX_BACKOFF_MS / 2)) {
-            backoffMs = MAX_BACKOFF_MS;
-            break;
-        }
-        backoffMs *= 2;
-    }
-
-    nextRetryAtMs = now + backoffMs;
-    LOG_WARN("Telegram send failed, retry in %u ms", backoffMs);
-}
-
-void TelegramBridge::processIncomingTelegram()
-{
-    uint32_t timeoutSec = TELEGRAM_LONG_POLL_TIMEOUT;
-    {
-        concurrency::LockGuard guard(&configLock);
-        if (state == State::STATE_DISABLED || !isConfiguredLocked()) {
-            return;
-        }
-        timeoutSec = longPollTimeoutSec;
-    }
-
-    TelegramMessage updates[TELEGRAM_UPDATE_BATCH_SIZE];
-    const int count = api.getUpdates(updates, TELEGRAM_UPDATE_BATCH_SIZE, timeoutSec);
-    if (count <= 0)
-        return;
-
-    for (int i = 0; i < count; ++i) {
-        const TelegramMessage &message = updates[i];
-        if (!matchesConfiguredChat(message.chat_id)) {
-            continue;
-        }
-
-        if (handleTelegramCommand(message)) {
-            continue;
-        }
-
-        injectToMesh(message.text, message.from_name);
-    }
-}
+// ─── Telegram command handling ────────────────────────────────────────────────
 
 bool TelegramBridge::handleTelegramCommand(const TelegramMessage &message)
 {
@@ -778,6 +1144,36 @@ bool TelegramBridge::handleTelegramCommand(const TelegramMessage &message)
         } else {
             enqueueTelegramMessage("Channels updated: " + snapshot.channels);
         }
+        return true;
+    }
+
+    static const std::string directionCommand = "/config direction";
+    if (command.rfind(directionCommand, 0) == 0) {
+        const std::string value = trim(command.substr(directionCommand.size()));
+
+        TelegramDirectionMode newMode = TelegramDirectionMode::BOTH;
+        if (value == "both" || value == "bidir") {
+            newMode = TelegramDirectionMode::BOTH;
+        } else if (value == "mesh_to_telegram" || value == "m2t") {
+            newMode = TelegramDirectionMode::MESH_TO_TELEGRAM;
+        } else if (value == "telegram_to_mesh" || value == "t2m") {
+            newMode = TelegramDirectionMode::TELEGRAM_TO_MESH;
+        } else {
+            enqueueTelegramMessage("Invalid direction. Use: both|mesh_to_telegram|telegram_to_mesh");
+            return true;
+        }
+
+        TelegramControlPatch patch;
+        patch.hasDirectionMode = true;
+        patch.directionMode = newMode;
+
+        const TelegramControlResult updateResult = applyControlPatch(patch, TelegramControlSource::TELEGRAM_CHAT);
+        if (!updateResult.ok()) {
+            enqueueTelegramMessage("Failed to update direction mode");
+            return true;
+        }
+
+        enqueueTelegramMessage(std::string("Direction updated: ") + directionToString(newMode));
         return true;
     }
 
@@ -836,8 +1232,13 @@ std::string TelegramBridge::buildStatusMessage()
     status += "\nchannels: ";
     status += snapshot.allowAllChannels ? "all" : snapshot.channels;
 
+    status += "\ndirection: ";
+    status += directionToString(snapshot.directionMode);
+
     return truncateUtf8(status, TELEGRAM_MAX_TEXT_SIZE);
 }
+
+// ─── Mesh integration ─────────────────────────────────────────────────────────
 
 std::string TelegramBridge::formatMeshMessage(const meshtastic_MeshPacket *packet) const
 {
@@ -905,6 +1306,9 @@ bool TelegramBridge::injectToMesh(const std::string &text, const std::string &se
     uint8_t channel = 0;
     {
         concurrency::LockGuard guard(&configLock);
+        if (!allowsTelegramToMesh(directionMode)) {
+            return false;
+        }
         channel = telegramToMeshChannel;
     }
 

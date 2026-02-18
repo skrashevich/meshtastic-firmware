@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string>
+#include <vector>
 
 enum class TelegramControlSource : uint8_t {
     UNKNOWN = 0,
@@ -20,6 +21,34 @@ enum class TelegramControlError : uint8_t {
     NOT_AVAILABLE = 1,
     INVALID_ARGUMENT = 2,
     PERSISTENCE_ERROR = 3,
+};
+
+enum class TelegramDirectionMode : uint8_t {
+    BOTH = 0,
+    MESH_TO_TELEGRAM = 1,
+    TELEGRAM_TO_MESH = 2,
+};
+
+enum class TelegramHistoryDirection : uint8_t {
+    OUTGOING = 0,
+    INCOMING = 1,
+};
+
+enum class TelegramHistoryStatus : uint8_t {
+    QUEUED = 0,
+    SENT = 1,
+    SEND_FAILED = 2,
+    RECEIVED = 3,
+    INJECTED = 4,
+    IGNORED_CHAT = 5,
+    COMMAND = 6,
+    INJECT_FAILED = 7,
+};
+
+enum class TelegramHistoryFilterDirection : uint8_t {
+    BOTH = 0,
+    OUTGOING = 1,
+    INCOMING = 2,
 };
 
 struct TelegramControlPatch {
@@ -43,6 +72,9 @@ struct TelegramControlPatch {
 
     bool hasSendIntervalMs = false;
     uint32_t sendIntervalMs = 0;
+
+    bool hasDirectionMode = false;
+    TelegramDirectionMode directionMode = TelegramDirectionMode::BOTH;
 };
 
 struct TelegramControlSnapshot {
@@ -63,6 +95,10 @@ struct TelegramControlSnapshot {
     uint32_t longPollTimeoutSec = 0;
     uint32_t sendIntervalMs = 0;
 
+    TelegramDirectionMode directionMode = TelegramDirectionMode::BOTH;
+    bool meshToTelegramEnabled = true;
+    bool telegramToMeshEnabled = true;
+
     bool hasToken = false;
     bool hasChatId = false;
     std::string chatId;
@@ -75,6 +111,22 @@ struct TelegramControlResult {
     std::string message;
 
     bool ok() const { return error == TelegramControlError::NONE; }
+};
+
+struct TelegramHistoryEntry {
+    uint32_t timestampMs = 0;
+    std::string chatId;
+    std::string sender;
+    std::string text;
+    TelegramHistoryDirection direction = TelegramHistoryDirection::OUTGOING;
+    TelegramHistoryStatus status = TelegramHistoryStatus::QUEUED;
+};
+
+struct TelegramHistoryChatSummary {
+    std::string chatId;
+    uint16_t incomingCount = 0;
+    uint16_t outgoingCount = 0;
+    uint32_t lastTimestampMs = 0;
 };
 
 #if !MESHTASTIC_EXCLUDE_TELEGRAM && HAS_WIFI && defined(ARCH_ESP32)
@@ -97,6 +149,10 @@ class TelegramBridge : public concurrency::OSThread, public Observer<const mesht
     TelegramControlSnapshot getControlSnapshot();
     TelegramControlResult applyControlPatch(const TelegramControlPatch &patch, TelegramControlSource source);
     TelegramControlResult setEnabled(bool enabled, TelegramControlSource source);
+    std::vector<TelegramHistoryEntry> getHistory(const std::string &chatIdFilter,
+                                                 TelegramHistoryFilterDirection directionFilter, size_t limit);
+    std::vector<TelegramHistoryChatSummary> getHistoryChats(size_t limit);
+    void clearHistory();
 
   protected:
     int32_t runOnce() override;
@@ -111,6 +167,10 @@ class TelegramBridge : public concurrency::OSThread, public Observer<const mesht
 
     struct QueueEntry {
         std::string text;
+    };
+
+    struct HistoryRingEntry {
+        TelegramHistoryEntry entry;
     };
 
     TelegramAPI api;
@@ -133,19 +193,22 @@ class TelegramBridge : public concurrency::OSThread, public Observer<const mesht
     uint32_t pollIntervalMs = TELEGRAM_POLL_INTERVAL_MS;
     uint32_t longPollTimeoutSec = TELEGRAM_LONG_POLL_TIMEOUT;
     uint32_t sendIntervalMs = TELEGRAM_SEND_INTERVAL_MS;
+    TelegramDirectionMode directionMode = TelegramDirectionMode::BOTH;
 
-    uint32_t lastPollAtMs = 0;
-    uint32_t lastSendAtMs = 0;
-    uint32_t nextRetryAtMs = 0;
-    uint8_t consecutiveSendErrors = 0;
     uint32_t lastHeapWarnMs = 0;
 
-    bool hasPendingMessage = false;
-    std::string pendingMessage;
+    HistoryRingEntry historyEntries[TELEGRAM_HISTORY_MAX_ENTRIES];
+    size_t historyHead = 0;
+    size_t historyCount = 0;
 
     static constexpr size_t SELF_INJECTED_ID_COUNT = 8;
     uint32_t selfInjectedIds[SELF_INJECTED_ID_COUNT] = {0};
     size_t selfInjectedIndex = 0;
+
+    // HTTP task (runs all blocking HTTPS calls in a separate FreeRTOS task)
+    TaskHandle_t _httpTaskHandle = nullptr;
+    QueueHandle_t _incomingQueue = nullptr; // TelegramMessage* pointers from HTTP task
+    volatile bool _httpTaskShouldStop = false;
 
     void loadConfig();
     bool saveSettingsToNvsLocked();
@@ -168,20 +231,33 @@ class TelegramBridge : public concurrency::OSThread, public Observer<const mesht
     void rememberSelfInjected(uint32_t packetId);
 
     void enqueueTelegramMessage(const std::string &text);
-    void sendQueuedMessages();
-    void processIncomingTelegram();
+    void appendHistory(TelegramHistoryDirection direction, TelegramHistoryStatus status, const std::string &chat,
+                       const std::string &sender, const std::string &text);
+    void appendHistoryLocked(TelegramHistoryDirection direction, TelegramHistoryStatus status, const std::string &chat,
+                             const std::string &sender, const std::string &text);
 
     bool handleTelegramCommand(const TelegramMessage &message);
     std::string buildStatusMessage();
 
     std::string formatMeshMessage(const meshtastic_MeshPacket *packet) const;
     bool injectToMesh(const std::string &text, const std::string &senderName);
+
+    // HTTP task management
+    void startHttpTask();
+    void stopHttpTask();
+    static void httpTaskEntryPoint(void *param);
+    void httpTaskLoop();
+    void processIncomingMessage(const TelegramMessage *msg);
 };
 
 void telegramInit();
 TelegramControlSnapshot telegramGetControlSnapshot();
 TelegramControlResult telegramApplyControlPatch(const TelegramControlPatch &patch, TelegramControlSource source);
 TelegramControlResult telegramSetEnabled(bool enabled, TelegramControlSource source);
+std::vector<TelegramHistoryEntry> telegramGetHistory(const std::string &chatIdFilter,
+                                                     TelegramHistoryFilterDirection directionFilter, size_t limit);
+std::vector<TelegramHistoryChatSummary> telegramGetHistoryChats(size_t limit);
+bool telegramClearHistory();
 extern TelegramBridge *telegramBridge;
 
 #else
@@ -210,6 +286,21 @@ inline TelegramControlResult telegramSetEnabled(bool, TelegramControlSource)
     result.error = TelegramControlError::NOT_AVAILABLE;
     result.message = "Telegram bridge is not available in this build";
     return result;
+}
+
+inline std::vector<TelegramHistoryEntry> telegramGetHistory(const std::string &, TelegramHistoryFilterDirection, size_t)
+{
+    return std::vector<TelegramHistoryEntry>();
+}
+
+inline std::vector<TelegramHistoryChatSummary> telegramGetHistoryChats(size_t)
+{
+    return std::vector<TelegramHistoryChatSummary>();
+}
+
+inline bool telegramClearHistory()
+{
+    return false;
 }
 
 #endif

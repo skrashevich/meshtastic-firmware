@@ -53,3 +53,5 @@ CMakeLists.txt
 
 # PYTHONPATH used by the Nix shell
 .python3
+
+src/telegram/DEVICE_UI_TZ.md
