@@ -21,17 +21,18 @@ This is a fork of the [official Meshtastic firmware](https://github.com/meshtast
 
 <img src=".github/screenshot_ru.jpg" alt="T-Deck with Russian keyboard" width="300"/>
 
-### Russian Language Features
+### Fork Features
 
 - **Russian OLED display** — Cyrillic text rendering on OLED screens (via `OLED_RU` build flag)
-- **Russian keyboard for T-Deck** — Full Russian keyboard layout with EN/RU switching via the [device-ui fork](https://github.com/skrashevich/device-ui/tree/feat-russian-keyboard). Toggle layout by pressing **Left Shift + Mic button** simultaneously
+- **Russian keyboard for T-Deck** — Full Russian keyboard layout with EN/RU switching via the [device-ui fork](https://github.com/skrashevich/device-ui). Toggle layout by pressing **Left Shift + Mic button** simultaneously
+- **Online map tiles fallback** — If local tile service is unavailable, T-Deck can load online tiles with backup OpenStreetMap source and map style dropdown in UI (available when Wi-Fi is connected and coordinates are available)
 
 ### Supported Devices
 
-| Device | Russian OLED | Russian Keyboard |
-|--------|:---:|:---:|
-| T-Deck (TFT) | ✅ | ✅ |
-| Other devices with OLED | ✅ | — |
+| Device | Russian OLED | Russian Keyboard | Online Map Tiles |
+|--------|:---:|:---:|:---:|
+| T-Deck (TFT) | ✅ | ✅ | ✅ |
+| Other devices with OLED | ✅ | — | — |
 
 ### Download
 
