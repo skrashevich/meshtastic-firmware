@@ -1,0 +1,215 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1773660672071,
+  "projectRoot": "/Users/svk/Documents/Projects.nosync/meshtastic-firmware",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "bin",
+      "src",
+      "test"
+    ],
+    "gitBranches": {
+      "defaultBranch": "develop",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "bin": {
+      "path": "bin",
+      "purpose": "Executable scripts",
+      "fileCount": 60,
+      "lastAccessed": 1773660672042,
+      "keyFiles": [
+        "99-meshtasticd-udev.rules",
+        "Meshtastic_nRF52_factory_erase_v3_S140_6.1.0.uf2",
+        "Meshtastic_nRF52_factory_erase_v3_S140_7.3.0.uf2",
+        "analyze_map.py",
+        "base64_to_hex.py"
+      ]
+    },
+    "boards": {
+      "path": "boards",
+      "purpose": null,
+      "fileCount": 65,
+      "lastAccessed": 1773660672044,
+      "keyFiles": [
+        "CDEBYTE_EoRa-Hub.json",
+        "CDEBYTE_EoRa-S3.json",
+        "ESP32-S3-WROOM-1-N4.json",
+        "ThinkNode-M1.json",
+        "ThinkNode-M3.json"
+      ]
+    },
+    "branding": {
+      "path": "branding",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1773660672044,
+      "keyFiles": [
+        "README.md"
+      ]
+    },
+    "data": {
+      "path": "data",
+      "purpose": "Data files",
+      "fileCount": 0,
+      "lastAccessed": 1773660672044,
+      "keyFiles": []
+    },
+    "debian": {
+      "path": "debian",
+      "purpose": null,
+      "fileCount": 11,
+      "lastAccessed": 1773660672045,
+      "keyFiles": [
+        "changelog",
+        "ci_changelog.sh",
+        "ci_pack_sdeb.sh",
+        "control",
+        "meshtasticd.dirs"
+      ]
+    },
+    "extra_scripts": {
+      "path": "extra_scripts",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1773660672045,
+      "keyFiles": [
+        "README.md",
+        "disable_adafruit_usb.py",
+        "esp32_extra.py",
+        "esp32_pre.py",
+        "nrf52_extra.py"
+      ]
+    },
+    "images": {
+      "path": "images",
+      "purpose": null,
+      "fileCount": 7,
+      "lastAccessed": 1773660672045,
+      "keyFiles": [
+        "compass.png",
+        "face-24px.svg",
+        "face.png",
+        "location_searching-24px.svg",
+        "pin.png"
+      ]
+    },
+    "meshtestic": {
+      "path": "meshtestic",
+      "purpose": null,
+      "fileCount": 12,
+      "lastAccessed": 1773660672045,
+      "keyFiles": [
+        "LICENSE",
+        "README.md",
+        "devices.json",
+        "package-lock.json",
+        "package.json"
+      ]
+    },
+    "monitor": {
+      "path": "monitor",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1773660672048,
+      "keyFiles": [
+        "filter_c3_exception_decoder.py"
+      ]
+    },
+    "protobufs": {
+      "path": "protobufs",
+      "purpose": null,
+      "fileCount": 10,
+      "lastAccessed": 1773660672048,
+      "keyFiles": [
+        "LICENSE",
+        "README.md",
+        "buf.gen.yaml",
+        "buf.yaml",
+        "nanopb.proto"
+      ]
+    },
+    "release": {
+      "path": "release",
+      "purpose": null,
+      "fileCount": 10,
+      "lastAccessed": 1773660672054,
+      "keyFiles": [
+        "device-install.bat",
+        "device-install.sh",
+        "device-update.bat",
+        "device-update.sh",
+        "firmware-t-deck-tft-2.7.19.b4223d6.bin"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 56,
+      "lastAccessed": 1773660672056,
+      "keyFiles": [
+        "AmbientLightingThread.h",
+        "AudioThread.h",
+        "BluetoothCommon.cpp",
+        "BluetoothCommon.h",
+        "BluetoothStatus.h"
+      ]
+    },
+    "test": {
+      "path": "test",
+      "purpose": "Test files",
+      "fileCount": 3,
+      "lastAccessed": 1773660672057,
+      "keyFiles": [
+        "TestUtil.cpp",
+        "TestUtil.h"
+      ]
+    },
+    "tools": {
+      "path": "tools",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1773660672057,
+      "keyFiles": []
+    },
+    "variants": {
+      "path": "variants",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1773660672058,
+      "keyFiles": []
+    },
+    "data/static": {
+      "path": "data/static",
+      "purpose": "Static files",
+      "fileCount": 1,
+      "lastAccessed": 1773660672059,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}
