@@ -1,0 +1,74 @@
+name: Fork Release
+
+on:
+  push:
+    tags:
+      - "v*-svk*"
+
+permissions: read-all
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - id: ver
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "version=${TAG}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: t-deck-tft
+            platform: esp32s3
+          - board: tlora-pager-tft
+            platform: esp32s3
+    uses: ./.github/workflows/build_firmware.yml
+    with:
+      platform: ${{ matrix.platform }}
+      pio_env: ${{ matrix.board }}
+      version: ${{ needs.version.outputs.version }}
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          pattern: firmware-*
+
+      - name: Collect firmware files
+        run: |
+          mkdir -p release/
+          find artifacts/ -type f \( \
+            -name "*.bin" -o \
+            -name "*.mt.json" -o \
+            -name "*.elf" -o \
+            -name "device-*.sh" -o \
+            -name "device-*.bat" \
+          \) -exec cp {} release/ \;
+          echo "## Release artifacts" >> "$GITHUB_STEP_SUMMARY"
+          ls -lh release/ >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          name: "Meshtastic ${{ needs.version.outputs.version }} (SVK fork)"
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            release/firmware-*.bin
+            release/firmware-*.factory.bin
+            release/firmware-*.mt.json
+            release/littlefs-*.bin
