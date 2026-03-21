@@ -49,7 +49,7 @@ jobs:
         id: jsonStep
         run: |
           if [[ "${{matrix.arch}}" == "all" ]]; then
-            TARGETS='[{"board":"t-deck-tft","platform":"esp32s3"}]'
+            TARGETS='[{"board":"t-deck-tft","platform":"esp32s3"},{"board":"tlora-pager-tft","platform":"esp32s3"}]'
           else
             TARGETS='[]'
           fi
