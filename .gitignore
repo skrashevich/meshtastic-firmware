@@ -58,3 +58,4 @@ CMakeLists.txt
 .vscode
 .trunk
 .berry-cache
+.omc
