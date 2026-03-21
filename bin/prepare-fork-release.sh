@@ -54,10 +54,26 @@ if ! git merge "$UPSTREAM_TAG" -m "Merge upstream $UPSTREAM_TAG for fork release
     echo ""
     echo "ERROR: Merge conflicts detected. Resolve them manually, then run:"
     echo "  git commit"
-    echo "  git tag $FORK_TAG"
-    echo "  git push origin develop --tags"
+    echo "  $0 $UPSTREAM_TAG $SVK_BUILD  # повторить после решения конфликтов"
     exit 1
 fi
+
+# Парсим upstream-версию из тега: v2.7.20 или v2.7.20.6658ec2 → major=2 minor=7 build=20
+UPSTREAM_VER="${UPSTREAM_TAG#v}"           # убираем 'v' → 2.7.20.6658ec2
+MAJOR=$(echo "$UPSTREAM_VER" | cut -d. -f1)
+MINOR=$(echo "$UPSTREAM_VER" | cut -d. -f2)
+BUILD=$(echo "$UPSTREAM_VER" | cut -d. -f3)
+
+echo "==> Updating version.properties to ${MAJOR}.${MINOR}.${BUILD}..."
+cat > version.properties <<EOF
+[VERSION]
+major = ${MAJOR}
+minor = ${MINOR}
+build = ${BUILD}
+EOF
+
+git add version.properties
+git commit -m "Set version to ${MAJOR}.${MINOR}.${BUILD} for fork release $FORK_TAG"
 
 echo "==> Creating tag $FORK_TAG..."
 git tag "$FORK_TAG"
