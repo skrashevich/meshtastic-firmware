@@ -59,3 +59,5 @@ CMakeLists.txt
 .trunk
 .berry-cache
 .omc
+.claude/scheduled_tasks.lock
+userPrefs.jsonc.mcp-session-bak
