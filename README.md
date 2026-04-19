@@ -5,47 +5,105 @@
 
 </div>
 
-</div>
-
 <div align="center">
-	<a href="https://meshtastic.org">Website</a>
+	<a href="https://meshtastic.org">Сайт проекта</a>
 	-
-	<a href="https://meshtastic.org/docs/">Documentation</a>
+	<a href="https://meshtastic.org/docs/">Документация</a>
 	-
-	<a href="https://github.com/meshtastic/firmware">Upstream Repo</a>
+	<a href="https://github.com/meshtastic/firmware">Upstream-репозиторий</a>
+	-
+	<a href="https://github.com/skrashevich/device-ui">Форк device-ui</a>
 </div>
 
-## Overview
+## Обзор
 
-This is a fork of the [official Meshtastic firmware](https://github.com/meshtastic/firmware) with Russian language support. The fork is regularly synced with upstream and adds the following features:
+Форк [официальной прошивки Meshtastic](https://github.com/meshtastic/firmware) с поддержкой русского языка и расширенной совместимостью с устройствами. Форк автоматически синхронизируется с upstream ежедневно. Основной фокус — поддержка русскоязычных пользователей и дополнительные возможности для устройств LilyGo.
 
-<img src=".github/screenshot_ru.jpg" alt="T-Deck with Russian keyboard" width="300"/>
+<img src=".github/screenshot_ru.jpg" alt="T-Deck с русской клавиатурой" width="400"/>
 
-### Fork Features
+## Возможности форка
 
-- **Russian OLED display** — Cyrillic text rendering on OLED screens (via `OLED_RU` build flag)
-- **Russian keyboard for T-Deck** — Full Russian keyboard layout with EN/RU switching via the [device-ui fork](https://github.com/skrashevich/device-ui). Toggle layout by pressing **Left Shift + Mic button** simultaneously
-- **Online map tiles fallback** — If local tile service is unavailable, T-Deck can load online tiles with backup OpenStreetMap source and map style dropdown in UI (available when Wi-Fi is connected and coordinates are available)
+### Русская клавиатура на T-Deck
 
-### Supported Devices
+Полная поддержка русского ввода для LilyGo T-Deck через [форк device-ui](https://github.com/skrashevich/device-ui):
 
-| Device | Russian OLED | Russian Keyboard | Online Map Tiles |
-|--------|:---:|:---:|:---:|
-| T-Deck (TFT) | ✅ | ✅ | ✅ |
-| Other devices with OLED | ✅ | — | — |
+- **Раскладка ЙЦУКЕН** — стандартная русская раскладка, маппинг на физическую I2C-клавиатуру T-Deck (адрес `0x55`)
+- **Переключение EN/RU** — комбинация **Alt + Shift** на физической клавиатуре
+- **Виртуальная клавиатура** — экранная LVGL-клавиатура также переключается между EN/RU раскладками
+- **UTF-8 кириллица** — корректная кодировка кириллических символов в полях ввода текста
 
-### Download
+### TFT-интерфейс (device-ui) на T-Lora Pager
 
-- 📦 **[Latest build artifacts](https://nightly.link/skrashevich/meshtastic-firmware/workflows/main_matrix/develop?preview)** — Pre-built firmware binaries from the `develop` branch
+Полноценный графический TFT-интерфейс для LilyGo T-Lora Pager — устройства, которое **не имеет TFT UI в оригинальной прошивке**:
 
-### Building
+- **Дисплей 480×222** — специализированное представление `TFTView_480x222`, оптимизированное под широкоформатный экран Pager
+- **Навигация энкодером** — полное управление интерфейсом через встроенный ротарный энкодер с поддержкой ускорения
+- **Клавиатура TCA8418** — матричная клавиатура 4×10 (31 клавиша) с тремя слоями: Normal, Shift и Sym
+- **Русский ввод на Pager** — раскладка ЙЦУКЕН с переключением через **Sym + Shift**, дополнительные русские буквы через комбинации Sym+клавиша
+- **Навигационные горячие клавиши** — комбинации Sym+клавиша для переключения экранов, прокрутки списков и управления диалогами (подробнее: [T-Pager Navigation Guide](https://github.com/skrashevich/device-ui/blob/master/docs/T_PAGER_NAVIGATION.md))
+- **Кнопка BOOT → меню выключения** — нажатие кнопки BOOT (GPIO0) открывает меню reboot/shutdown, повторное нажатие закрывает его
 
-Follow the standard [Meshtastic build instructions](https://meshtastic.org/docs/development/firmware/build). To build the T-Deck firmware with Russian support:
+### Онлайн-тайлы карт
+
+При подключении к WiFi и наличии GPS-координат TFT-карта может загружать тайлы по HTTP:
+
+- **Несколько провайдеров** — OpenStreetMap, Яндекс.Карты, Google Maps
+- **Выбор провайдера** — выпадающий список в интерфейсе карты
+- **Поддержка проекций** — сферическая проекция Меркатора (OSM) и проекция WGS84 Меркатора (Яндекс)
+- **Fallback-логика** — онлайн-тайлы используются, когда локальный кэш на SD-карте недоступен
+
+### Кириллица на OLED-дисплеях
+
+Отрисовка кириллического текста на OLED-экранах через флаг сборки `OLED_RU` — доступно для всех ESP32-устройств с OLED-дисплеями.
+
+### Улучшения device-ui
+
+Форк использует [кастомный device-ui](https://github.com/skrashevich/device-ui) с дополнительными изменениями:
+
+- **Базовый класс TFTView_Common** — вынесено ~8000 строк общей логики TFT-представлений в базовый класс, уменьшено дублирование кода между вариантами дисплеев
+- **Улучшенный статус узлов** — оптимизированный подсчёт online/offline узлов и отображение времени последнего контакта
+- **Пробуждение экрана по вводу** — экран активируется при нажатии клавиши или вращении энкодера
+- **Резервное копирование конфигурации** — backup и restore полной конфигурации устройства
+
+## Поддерживаемые устройства
+
+| Устройство | TFT UI | Русская клавиатура | Онлайн-карты | Кириллица OLED |
+|-----------|:---:|:---:|:---:|:---:|
+| **T-Deck** (ESP32-S3) | ✅ | ✅ Alt+Shift | ✅ | — |
+| **T-Lora Pager** (ESP32-S3) | ✅ *(только форк)* | ✅ Sym+Shift | ✅ | — |
+| Другие OLED-устройства | — | — | — | ✅ |
+
+## Скачать
+
+- **[Последний релиз](https://github.com/skrashevich/meshtastic-firmware/releases/latest)** — стабильные сборки с тегами `v*-svk.*`
+- **[Ночные сборки](https://nightly.link/skrashevich/meshtastic-firmware/workflows/main_matrix/develop?preview)** — автоматические сборки из ветки `develop`
+
+Артефакты релиза включают прошивки для окружений `t-deck-tft` и `tlora-pager-tft`.
+
+## Сборка
+
+Следуйте стандартным [инструкциям по сборке Meshtastic](https://meshtastic.org/docs/development/firmware/build).
+
+### T-Deck с русской клавиатурой
 
 ```bash
 pio run -e t-deck-tft
 ```
 
-### Flashing
+### T-Lora Pager с TFT-интерфейсом
 
-- ⚡ **[Flashing Instructions](https://meshtastic.org/docs/getting-started/flashing-firmware/)** – Install or update the firmware on your device.
+```bash
+pio run -e tlora-pager-tft
+```
+
+> **Примечание:** оба окружения по умолчанию используют локальный symlink на `../device-ui/`. Для CI-сборок переключите на GitHub-архив в `platformio.ini`.
+
+## Прошивка устройства
+
+- **[Инструкции по прошивке](https://meshtastic.org/docs/getting-started/flashing-firmware/)** — установка или обновление прошивки на устройство
+
+## Обслуживание форка
+
+- **Ежедневная синхронизация с upstream** — GitHub Actions автоматически мержит `upstream/develop` и синхронизирует теги релизов
+- **Автоматические релизы** — push тега `v*-svk*` запускает CI-сборку и создаёт GitHub Release для обоих поддерживаемых устройств
+- **Совместимость с upstream** — все изменения форка аддитивные; форк собирается и проходит те же CI-проверки, что и upstream
