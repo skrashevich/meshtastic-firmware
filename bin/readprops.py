@@ -4,8 +4,41 @@ import os
 run_number = os.getenv('GITHUB_RUN_NUMBER', '0')
 build_location = os.getenv('BUILD_LOCATION', 'local')
 
+
+def _short_from_override(override: str) -> str:
+    parts = override.split(".")
+    nums = []
+    for p in parts:
+        if p.isdigit():
+            nums.append(p)
+            if len(nums) == 3:
+                return ".".join(nums)
+        elif nums:
+            break
+    return override.split("-", 1)[0] if "-" in override else override
+
+
 def readProps(prefsLoc):
     """Read the version of our project as a string"""
+
+    override = os.getenv("MESHTASTIC_APP_VERSION_OVERRIDE", "").strip()
+    if override:
+        short = _short_from_override(override)
+        verObj = dict(short=short, long=override, deb="unset")
+        try:
+            sha = (
+                subprocess.check_output(["git", "rev-parse", "--short=7", "HEAD"])
+                .decode("utf-8")
+                .strip()
+            )
+            verObj["deb"] = "{}.{}~{}{}".format(
+                verObj["short"], run_number, build_location, sha
+            )
+        except Exception:
+            verObj["deb"] = "{}.{}~{}".format(
+                verObj["short"], run_number, build_location
+            )
+        return verObj
 
     config = configparser.RawConfigParser()
     config.read(prefsLoc)

@@ -18,6 +18,8 @@ permissions: read-all
 jobs:
   pio-build:
     name: build-${{ inputs.platform }}
+    env:
+      MESHTASTIC_APP_VERSION_OVERRIDE: ${{ inputs.version }}
     # Use 'arctastic' self-hosted runner pool when building in the main repo
     runs-on: ${{ github.repository_owner == 'meshtastic' && 'arctastic' || 'ubuntu-latest' }}
     outputs:
