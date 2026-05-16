@@ -6,6 +6,11 @@ on:
       - "v*-svk*"
       - "*-svk*"
   workflow_dispatch:
+    inputs:
+      version_without_v:
+        description: "Semantic tag without leading v (e.g. 2.7.23.b246bcd-svk.1)"
+        required: true
+        type: string
 
 permissions: read-all
 
@@ -17,7 +22,11 @@ jobs:
     steps:
       - id: ver
         run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.version_without_v }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/v}"
+          fi
           echo "version=${TAG}" >> "$GITHUB_OUTPUT"
 
   build:
