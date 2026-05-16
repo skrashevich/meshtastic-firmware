@@ -5,6 +5,7 @@ on:
     tags:
       - "v*-svk*"
       - "*-svk*"
+  workflow_dispatch:
 
 permissions: read-all
 
