@@ -29,6 +29,10 @@ jobs:
         with:
           submodules: recursive
 
+      # gh-action-firmware runs PIO in Docker with a fixed env list; `.ci-app-version` is mounted into the workspace.
+      - name: Pin application version string (Docker CI)
+        run: printf '%s\n' '${{ inputs.version }}' > .ci-app-version
+
       - name: Build ${{ inputs.platform }}
         id: build
         uses: meshtastic/gh-action-firmware@main

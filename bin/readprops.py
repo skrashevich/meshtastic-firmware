@@ -1,6 +1,8 @@
 import configparser
 import subprocess
 import os
+from os.path import abspath, dirname, join
+
 run_number = os.getenv('GITHUB_RUN_NUMBER', '0')
 build_location = os.getenv('BUILD_LOCATION', 'local')
 
@@ -22,6 +24,13 @@ def readProps(prefsLoc):
     """Read the version of our project as a string"""
 
     override = os.getenv("MESHTASTIC_APP_VERSION_OVERRIDE", "").strip()
+    if not override:
+        ci_path = join(dirname(abspath(prefsLoc)), ".ci-app-version")
+        try:
+            with open(ci_path, encoding="utf-8") as f:
+                override = f.read().splitlines()[0].strip()
+        except (OSError, IndexError):
+            override = ""
     if override:
         short = _short_from_override(override)
         verObj = dict(short=short, long=override, deb="unset")
