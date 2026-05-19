@@ -16,6 +16,9 @@
 </div>
 
 ## Обзор
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/skrashevich/meshtastic-firmware?include_prereleases)](https://github.com/skrashevich/meshtastic-firmware/releases)
+
 
 Форк [официальной прошивки Meshtastic](https://github.com/meshtastic/firmware) с поддержкой русского языка и расширенной совместимостью с устройствами. Форк автоматически синхронизируется с upstream ежедневно. Основной фокус — поддержка русскоязычных пользователей и дополнительные возможности для устройств LilyGo.
 
