@@ -79,7 +79,7 @@
 ## Скачать
 
 - **[Последний релиз](https://github.com/skrashevich/meshtastic-firmware/releases/latest)** — стабильные сборки с тегами `v*-svk.*`
-- **[Ночные сборки](https://nightly.link/skrashevich/meshtastic-firmware/workflows/main_matrix/develop?preview)** — автоматические сборки из ветки `develop`
+- **[Ночные сборки](https://dawnl.ink/skrashevich/meshtastic-firmware/workflows/main_matrix/develop?preview)** — автоматические сборки из ветки `develop`
 
 Артефакты релиза включают прошивки для окружений `t-deck-tft` и `tlora-pager-tft`.
 
