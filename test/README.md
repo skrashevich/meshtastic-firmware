@@ -4,6 +4,20 @@ This directory contains C++ unit tests that run on the host machine via Platform
 
 ## Running Tests
 
+**Preferred: use `bin/run-tests.sh`** — it runs the `coverage` env (ASan/LSan sanitizers), cross-checks the number of suites that actually ran, and emits an unambiguous RED/AMBER/GREEN verdict:
+
+```bash
+./bin/run-tests.sh                          # all suites
+./bin/run-tests.sh -f test_traffic_management  # single suite
+./bin/run-tests.sh -f test_traffic_management > /tmp/test_out.txt 2>&1; tail -5 /tmp/test_out.txt
+```
+
+Exit codes: 0 = GREEN, 1 = RED, 2 = AMBER.
+
+> **Copilot interface note:** When running tests via the Copilot chat interface, edits made through the chat may not be reflected in the on-disk files that the test binary reads. If tests pass in chat but fail locally (or vice versa), verify the files on disk match what you expect before trusting the result. Always confirm with a local terminal run.
+
+**Raw `pio test` (no sanitizers, no verdict logic)** — use when you need to override the env or inspect verbose Unity output:
+
 ```bash
 # All test suites
 pio test -e native
@@ -17,7 +31,7 @@ pio test -e native -f test_your_module -vvv
 
 **Never pipe through `| tail -N` to shorten output.** PlatformIO prints build errors at the top of output and test results at the bottom; `tail` will show stale cached results from a prior successful build while hiding the compile error that caused the current run to fail.
 
-**Preferred pattern — redirect to file, then grep:**
+**Preferred pattern for raw pio — redirect to file, then grep:**
 
 ```bash
 # Redirect all output to a file; grep for errors and results after it exits
@@ -85,7 +99,7 @@ The native build requires several system libraries. Install them all at once:
 
 ```bash
 sudo apt-get install -y \
-  libbluetooth-dev libgpiod-dev libyaml-cpp-dev openssl libssl-dev \
+  libbluetooth-dev libgpiod-dev libyaml-cpp-dev libjsoncpp-dev openssl libssl-dev \
   libulfius-dev liborcania-dev libusb-1.0-0-dev libi2c-dev libuv1-dev
 ```
 
@@ -200,7 +214,7 @@ class MockNodeDB : public NodeDB
         node.num = num;
         node.has_hops_away = hasHops;
         node.hops_away = hopsAway;
-        node.via_mqtt = viaMqtt;
+        nodeInfoLiteSetBit(&node, NODEINFO_BITFIELD_VIA_MQTT_MASK, viaMqtt);
         node.last_heard = getTime() - ageSecs;
         testNodes.push_back(node);
         meshNodes = &testNodes;
@@ -358,6 +372,7 @@ PlatformIO defines `PIO_UNIT_TESTING` during `pio test` builds. Several producti
 - [ ] Set `nodeDB = mockNodeDB`
 - [ ] Delete persisted state files (`FSCom.remove(...)`)
 - [ ] Reset file-scope mutable globals
+- [ ] Reset mock clock to a safe base value (e.g. `mockTime = ONE_HOUR_MS`) — prevents unsigned subtraction underflow in time-dependent logic
 - [ ] Disable randomness/jitter flags
 - [ ] In `tearDown`: null the global singleton pointer, restore flags
 
@@ -375,15 +390,21 @@ A well-structured test suite follows this pattern:
 
 | Suite                        | Module Under Test             |
 | ---------------------------- | ----------------------------- |
+| `test_admin_radio`           | Admin + LoRa region config    |
+| `test_atak`                  | ATAK integration              |
 | `test_crypto`                | CryptoEngine                  |
-| `test_mqtt`                  | MQTT integration              |
-| `test_radio`                 | Radio interface               |
+| `test_default`               | Default configuration helpers |
+| `test_hop_scaling`           | Hop scaling algorithm         |
+| `test_http_content_handler`  | HTTP handling                 |
+| `test_mac_from_string`       | MAC address parsing           |
 | `test_mesh_module`           | Module framework              |
 | `test_meshpacket_serializer` | Packet serialization          |
-| `test_transmit_history`      | Retransmission tracking       |
-| `test_atak`                  | ATAK integration              |
-| `test_default`               | Default configuration helpers |
-| `test_http_content_handler`  | HTTP handling                 |
+| `test_mqtt`                  | MQTT integration              |
+| `test_packet_history`        | Packet history tracking       |
+| `test_position_precision`    | Position precision helpers    |
+| `test_radio`                 | Radio interface               |
 | `test_serial`                | Serial communication          |
-| `test_hop_scaling`           | Hop scaling algorithm         |
 | `test_traffic_management`    | Traffic management            |
+| `test_transmit_history`      | Retransmission tracking       |
+| `test_type_conversions`      | NodeDB v25 type conversions   |
+| `test_utf8`                  | UTF-8 utilities               |
