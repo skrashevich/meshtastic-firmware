@@ -3,6 +3,7 @@
 #include "Observer.h"
 #include "ProtobufModule.h"
 #include "RadioInterface.h"
+#include "RadioTxHook.h"
 #include "concurrency/OSThread.h"
 #include "mesh/generated/meshtastic/mesh_beacon.pb.h"
 #include "mesh/generated/meshtastic/module_config.pb.h"
@@ -39,7 +40,7 @@ class MeshBeaconModule
     /**
      * Reconfigure the radio for beacon TX, or restore to original config if p is NULL.
      * Returns true if the radio was reconfigured (caller must re-run transmit delay for CCA).
-     * Driven by broadcast_on_preset / broadcast_on_channel from MeshBeaconConfig.
+     * Driven by the broadcast_targets entry associated with the packet.
      */
     static bool reconfigureForBeaconTX(RadioInterface *iface, meshtastic_MeshPacket *p);
 
@@ -55,13 +56,13 @@ class MeshBeaconModule
 
     /**
      * Returns true if the sidecar table contains an entry for this packet's ID.
-     * Used by RadioLibInterface to gate the channel-active check.
+     * Used via MeshBeaconTxHook to keep the driver from listening while a beacon is queued.
      */
     static bool hasTargetRadioSettings(const meshtastic_MeshPacket *p);
 
     /**
      * Remove the sidecar entry for this packet after it has been sent.
-     * Called from RadioLibInterface::completeSending().
+     * Called via MeshBeaconTxHook once the driver is done with the packet.
      */
     static void clearTargetRadioSettings(const meshtastic_MeshPacket *p);
 
@@ -76,7 +77,7 @@ class MeshBeaconModule
   protected:
     /**
      * Build the ChannelSettings the beacon transmits on: the base (primary) channel overlaid with
-     * any broadcast_on_channel overrides, defaulting an empty name to the target preset's display
+     * the target's channel-table slot, defaulting an empty name to the target preset's display
      * name. Shared by the encrypt-time channel swap and the radio-thread RF swap so the channel
      * key + hash are identical at both points.
      */
@@ -89,6 +90,20 @@ class MeshBeaconModule
     static meshtastic_Config_LoRaConfig_RegionCode originalRegion;
     static meshtastic_ChannelSettings originalPrimaryChannel;
 };
+
+/**
+ * Carries the beacon's radio switching into the radio driver's TX lifecycle, so the driver holds no
+ * beacon-specific code. One instance is created with the beacon modules and registers itself.
+ */
+class MeshBeaconTxHook : public RadioTxHook
+{
+  public:
+    PreTxAction beforeTransmit(RadioInterface *iface, meshtastic_MeshPacket *p) override;
+    bool holdsRadio(const meshtastic_MeshPacket *p) override;
+    void packetReleased(RadioInterface *iface, const meshtastic_MeshPacket *p) override;
+};
+
+extern MeshBeaconTxHook *meshBeaconTxHook;
 
 /**
  * Broadcaster: periodically sends MeshBeacon packets on the configured preset/channel.
@@ -133,9 +148,9 @@ extern MeshBeaconBroadcastModule *meshBeaconBroadcastModule;
 
 /**
  * Listener: receives MESH_BEACON_APP packets and caches any offered channel/preset for the client
- * app to retrieve. It does NOT unwrap the text into a separate message — the original beacon packet
+ * app to retrieve. It does NOT unwrap the text into a separate message - the original beacon packet
  * already reaches the client (handler returns CONTINUE), which reads `message` from it directly.
- * Does NOT auto-apply offered settings — client app must do so explicitly.
+ * Does NOT auto-apply offered settings - client app must do so explicitly.
  * Active only when the FLAG_LISTEN_ENABLED bit is set in moduleConfig.mesh_beacon.flags.
  */
 class MeshBeaconListenerModule : public ProtobufModule<meshtastic_MeshBeacon>, public Observable<const meshtastic_MeshPacket *>
@@ -153,7 +168,7 @@ class MeshBeaconListenerModule : public ProtobufModule<meshtastic_MeshBeacon>, p
         uint32_t received_at;
     };
 
-    // Last received offer — accessible to admin/API for client app retrieval.
+    // Last received offer - accessible to admin/API for client app retrieval.
     static BeaconOffer lastReceivedOffer;
 
   protected:
