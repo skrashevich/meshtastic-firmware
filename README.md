@@ -99,7 +99,7 @@ pio run -e t-deck-tft
 pio run -e tlora-pager-tft
 ```
 
-> **Примечание:** оба окружения по умолчанию используют локальный symlink на `../device-ui/`. Для CI-сборок переключите на GitHub-архив в `platformio.ini`.
+> **Примечание:** оба окружения используют закреплённый коммит форка `skrashevich/device-ui` с GitHub. Для локальной разработки замените URL архива в соответствующем `platformio.ini` на `symlink://../device-ui/`.
 
 ## Прошивка устройства
 
